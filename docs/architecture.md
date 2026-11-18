@@ -241,3 +241,36 @@ pub struct FerroTheme { pub palette: Palette, pub metrics: Metrics, pub dark: bo
 * Protocol client design and library choice → `docs/protocol.md`.
 * Screens and navigation map.
 * Palette table.
+
+### Ferrotune
+
+**Library choice.** `librespot` 0.8 (`core`, `playback`, `metadata`,
+`protocol`) for audio; the Spotify Web API over `reqwest` for everything
+the UI lists; own OAuth PKCE implementation (`auth/oauth.rs`); `mpris-server`
+0.9 (zbus 5) for MPRIS. Details in `docs/protocol.md`.
+
+**Module map.**
+
+| Module | Ferrotune files |
+|---|---|
+| `app/` | `mod.rs` (App, boot, update, subscription), `message.rs`, `state.rs` (Queue, Nav, Playback, backoff), `images.rs` (LRU of decoded art, 48 MB) |
+| `ui/` | `theme.rs`, `icons.rs`, `widgets.rs`, `login.rs`, `topbar.rs`, `sidebar.rs`, `home.rs`, `search.rs`, `library.rs`, `collection.rs` (playlist/album/liked), `artist.rs`, `queue.rs`, `now_playing.rs` |
+| `net/` | `webapi.rs`, `types.rs` (wire), `model.rs` (domain), `paging.rs`, `playback.rs` (librespot + mock engine), `mpris.rs`, `images.rs` |
+| `store/` | `mod.rs`, `schema.sql` (`entity` JSON blobs by kind/id, `kv` settings) |
+| `auth/` | `mod.rs` (AuthState), `oauth.rs` (PKCE, loopback listener, token endpoint), `secrets.rs` |
+
+**Long-lived subscriptions.** Playback engine events
+(`Subscription::run_with(EngineKind, ..)`), MPRIS commands (Linux), a 500 ms
+tick only while playing or a toast is visible.
+
+**Screens and navigation.**
+
+```
+Login ──(PKCE)──▶ Main layout
+Main layout = Top bar (back/forward, Home, Search) + Sidebar (Your Library)
+            + Main panel (Route) + optional Queue panel + Now-playing bar
+Route: Home | Search | Library | Liked | Playlist(id) | Album(id) | Artist(id)
+Back/forward history: app::state::Nav (max 50 entries)
+```
+
+**Palette.** See `docs/protocol.md` §5 (UI reference).
