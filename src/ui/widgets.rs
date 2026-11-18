@@ -217,10 +217,10 @@ pub fn header<'a>(
     description: Option<String>,
     meta: El<'a>,
 ) -> El<'a> {
-    let title_size = if title.chars().count() > 22 {
-        48.0
-    } else {
-        M.font_hero
+    let title_size = match title.chars().count() {
+        0..=14 => M.font_hero,
+        15..=24 => 48.0,
+        _ => 32.0,
     };
     let mut info = column![
         semibold(kind, M.font_sm),

@@ -418,10 +418,12 @@ pub fn artist_page(id: &str) -> Result<ArtistPage> {
             status: 404,
             message: "not found".into(),
         })?;
-    let albums: Vec<Album> = (0..ALBUMS.len())
+    let mut albums: Vec<Album> = (0..ALBUMS.len())
         .filter(|&k| ALBUMS[k].2 == i || (k + i) % 3 == 0)
         .map(album_full)
         .collect();
+    // The artist's own releases first, like the real discography.
+    albums.sort_by_key(|a| a.artists.first().is_none_or(|r| r.id != id));
     let mut top: Vec<Track> = albums
         .iter()
         .flat_map(|a| a.tracks.clone())
