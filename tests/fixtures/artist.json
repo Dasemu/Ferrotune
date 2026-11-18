@@ -1,0 +1,35 @@
+{
+ "id": "artist1",
+ "name": "Artist 1",
+ "type": "artist",
+ "uri": "spotify:artist:artist1",
+ "href": "https://api.spotify.com/v1/artists/x",
+ "external_urls": {
+  "spotify": "https://open.spotify.com/artist/x"
+ },
+ "images": [
+  {
+   "url": "https://i.scdn.co/image/ar1640",
+   "width": 640,
+   "height": 640
+  },
+  {
+   "url": "https://i.scdn.co/image/ar1300",
+   "width": 300,
+   "height": 300
+  },
+  {
+   "url": "https://i.scdn.co/image/ar164",
+   "width": 64,
+   "height": 64
+  }
+ ],
+ "followers": {
+  "href": null,
+  "total": 123456
+ },
+ "genres": [
+  "indie",
+  "rock"
+ ]
+}

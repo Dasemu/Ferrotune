@@ -1,0 +1,44 @@
+{
+ "artists": {
+  "items": [
+   {
+    "id": "artist2",
+    "name": "Artist 2",
+    "type": "artist",
+    "uri": "spotify:artist:artist2",
+    "href": "https://api.spotify.com/v1/artists/x",
+    "external_urls": {
+     "spotify": "https://open.spotify.com/artist/x"
+    },
+    "images": [
+     {
+      "url": "https://i.scdn.co/image/ar2640",
+      "width": 640,
+      "height": 640
+     },
+     {
+      "url": "https://i.scdn.co/image/ar2300",
+      "width": 300,
+      "height": 300
+     },
+     {
+      "url": "https://i.scdn.co/image/ar264",
+      "width": 64,
+      "height": 64
+     }
+    ],
+    "followers": {
+     "href": null,
+     "total": 2000
+    },
+    "genres": []
+   }
+  ],
+  "next": null,
+  "cursors": {
+   "after": null
+  },
+  "limit": 2,
+  "total": 3
+ }
+}
