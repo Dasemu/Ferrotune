@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main, development, "feat/**", "fix/**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libdbus-1-dev libasound2-dev libxkbcommon-dev \
+            libwayland-dev libx11-dev libfontconfig1-dev dbus
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        # A private session bus lets the MPRIS integration test run.
+        run: dbus-run-session -- cargo test

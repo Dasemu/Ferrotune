@@ -1,0 +1,52 @@
+name: Version
+
+# development push          -> bump PATCH
+# merged development -> main -> bump MINOR, reset PATCH
+# direct push to main        -> bump PATCH
+on:
+  push:
+    branches: [main, development]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Decide bump
+        id: kind
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "main" ] && echo "$MSG" | grep -qE "^Merge pull request .*/development"; then
+            echo "kind=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "kind=patch" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Bump Cargo.toml
+        id: bump
+        run: |
+          cur=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          IFS=. read -r major minor patch <<< "$cur"
+          if [ "${{ steps.kind.outputs.kind }}" = "minor" ]; then
+            minor=$((minor + 1)); patch=0
+          else
+            patch=$((patch + 1))
+          fi
+          new="$major.$minor.$patch"
+          sed -i "0,/^version = \".*\"/s//version = \"$new\"/" Cargo.toml
+          if [ -f Cargo.lock ]; then
+            sed -i "/^name = \"ferrotune\"$/{n;s/^version = \".*\"/version = \"$new\"/}" Cargo.lock
+          fi
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): v${{ steps.bump.outputs.new }}"
+          git push
