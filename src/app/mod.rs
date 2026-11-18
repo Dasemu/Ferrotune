@@ -768,7 +768,9 @@ impl App {
                 if !list.has_more() {
                     return Task::none();
                 }
-                let offset = list.tracks.len() as u32;
+                let Some(offset) = list.next else {
+                    return Task::none();
+                };
                 self.loading_more = true;
                 Task::perform(async move { src.saved_tracks(offset).await }, |r| {
                     Message::Done(Done::Liked(r))
@@ -781,7 +783,9 @@ impl App {
                 if !list.has_more() {
                     return Task::none();
                 }
-                let offset = list.tracks.len() as u32;
+                let Some(offset) = list.next else {
+                    return Task::none();
+                };
                 self.loading_more = true;
                 let id2 = id.clone();
                 Task::perform(
@@ -1585,10 +1589,7 @@ impl App {
                 let route = Route::Playlist(id.clone());
                 self.loading.remove(&route);
                 let flags = self.fetch_liked_flags(&page.items);
-                let list = TrackList {
-                    total: page.total,
-                    tracks: page.items.clone(),
-                };
+                let list = TrackList::from_page(page.clone());
                 self.playlists.insert(id.clone(), (pl.clone(), list));
                 Task::batch([
                     flags,
@@ -1598,8 +1599,7 @@ impl App {
             Done::PlaylistMore(id, Ok(page)) => {
                 self.loading_more = false;
                 if let Some((_, list)) = self.playlists.get_mut(&id) {
-                    list.total = page.total;
-                    list.tracks.extend(page.items);
+                    list.append(page);
                 }
                 Task::none()
             }
@@ -1610,16 +1610,11 @@ impl App {
                     self.liked_ids.insert(t.id.clone());
                 }
                 let first = page.offset == 0;
-                let list = self.liked.get_or_insert(TrackList {
-                    tracks: Vec::new(),
-                    total: 0,
-                });
                 if first {
-                    list.tracks = page.items.clone();
-                } else if page.offset as usize == list.tracks.len() {
-                    list.tracks.extend(page.items.clone());
+                    self.liked = Some(TrackList::from_page(page.clone()));
+                } else if let Some(list) = self.liked.as_mut() {
+                    list.append(page.clone());
                 }
-                list.total = page.total;
                 if first {
                     store_write(&self.store, Kind::Liked, "me".into(), page)
                 } else {

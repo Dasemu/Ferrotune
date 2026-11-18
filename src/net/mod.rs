@@ -72,11 +72,7 @@ impl DataSource {
     pub async fn playlist_tracks(&self, id: &str, offset: u32) -> Result<Page<Track>> {
         match self {
             Self::Web(w) => w.playlist_tracks(id, offset).await,
-            Self::Mock => Ok(Page {
-                items: vec![],
-                offset,
-                total: offset,
-            }),
+            Self::Mock => Ok(Page::new(vec![], offset, offset)),
         }
     }
 

@@ -2,7 +2,7 @@
 name = "ferrotune"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Lightweight native Spotify desktop client written in Rust (unofficial)"
 license = "MIT"
 repository = "https://github.com/Dasemu/Ferrotune"

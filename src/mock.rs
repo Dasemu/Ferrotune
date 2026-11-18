@@ -17,7 +17,17 @@ const ARTISTS: &[(&str, &str, u64)] = &[
 ];
 
 /// (id, name, artist index, year, kind, track names)
-const ALBUMS: &[(&str, &str, usize, &str, AlbumKind, &[&str])] = &[
+/// (id, name, artist index, release date, kind, track names)
+type AlbumRow = (
+    &'static str,
+    &'static str,
+    usize,
+    &'static str,
+    AlbumKind,
+    &'static [&'static str],
+);
+
+const ALBUMS: &[AlbumRow] = &[
     (
         "al01",
         "Midnight Cartography",
@@ -357,11 +367,11 @@ pub fn is_liked(id: &str) -> bool {
 pub fn liked(offset: u32) -> Page<Track> {
     let all = liked_tracks();
     let total = all.len() as u32;
-    Page {
-        items: all.into_iter().skip(offset as usize).take(50).collect(),
+    Page::new(
+        all.into_iter().skip(offset as usize).take(50).collect(),
         offset,
         total,
-    }
+    )
 }
 
 pub fn home() -> HomeFeed {
@@ -389,14 +399,7 @@ pub fn playlist(id: &str) -> Result<(Playlist, Page<Track>)> {
         })?;
     let tracks = playlist_tracks(i);
     let total = tracks.len() as u32;
-    Ok((
-        playlist_at(i),
-        Page {
-            items: tracks,
-            offset: 0,
-            total,
-        },
-    ))
+    Ok((playlist_at(i), Page::new(tracks, 0, total)))
 }
 
 pub fn album(id: &str) -> Result<Album> {

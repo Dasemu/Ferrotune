@@ -235,10 +235,7 @@ impl Queue {
         self.rebuild_order(start);
         let mut first = self.tracks[self.order[self.pos]].clone();
         if !first.playable {
-            match self.step_context(true) {
-                Some(t) => first = t,
-                None => return None,
-            }
+            first = self.step_context(true)?;
         }
         self.current = Some(first.clone());
         Some(first)

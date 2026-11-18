@@ -31,9 +31,34 @@ fn images(v: Option<Vec<Image>>) -> Vec<model::Image> {
     v.unwrap_or_default().into_iter().map(Into::into).collect()
 }
 
+/// Parse list entries one by one so a single malformed or unknown entry
+/// (Spotify adds item types over time) drops that entry, not the page.
+fn lenient_items<'de, D, T>(d: D) -> Result<Vec<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let raw: Option<Vec<serde_json::Value>> = Option::deserialize(d)?;
+    Ok(raw
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| serde_json::from_value(v).ok())
+        .collect())
+}
+
+/// `null` → `T::default()` (local files have `"id": null`).
+fn null_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Paging<T> {
-    #[serde(default = "Vec::new")]
+    #[serde(default = "Vec::new", deserialize_with = "lenient_items")]
+    #[serde(bound(deserialize = "T: serde::de::DeserializeOwned"))]
     pub items: Vec<Option<T>>,
     #[serde(default)]
     pub offset: u32,
@@ -53,6 +78,7 @@ impl<T> Paging<T> {
             items,
             offset: self.offset,
             total: self.total.max(self.offset + raw_len as u32),
+            raw_len: raw_len as u32,
         }
     }
 }
@@ -65,7 +91,8 @@ pub struct Cursors {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CursorPaging<T> {
-    #[serde(default = "Vec::new")]
+    #[serde(default = "Vec::new", deserialize_with = "lenient_items")]
+    #[serde(bound(deserialize = "T: serde::de::DeserializeOwned"))]
     pub items: Vec<Option<T>>,
     #[serde(default)]
     pub next: Option<String>,
@@ -130,6 +157,7 @@ impl From<FullArtist> for model::Artist {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Album {
+    #[serde(default, deserialize_with = "null_default")]
     pub id: String,
     #[serde(default)]
     pub uri: String,

@@ -214,6 +214,40 @@ mod tests {
     }
 
     #[test]
+    fn formatted_log_output_never_contains_secrets() {
+        use crate::auth::oauth::TokenSet;
+        use crate::auth::secrets::Secret;
+        let (writer, buf) = RedactingMakeWriter::capture();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer)
+            .with_ansi(false)
+            .finish();
+        let tokens = TokenSet {
+            access_token: Secret::new("BQDsecretAccess123"),
+            refresh_token: Some(Secret::new("AQDsecretRefresh456")),
+            expires_at: 0,
+            scope: String::new(),
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(?tokens, "token debug");
+            // A third-party error that embeds a URL with a code and a header.
+            tracing::warn!("callback GET /login?code=AQCsecretCode789&state=x");
+            tracing::warn!("sent Authorization: Bearer BQDsecretAccess123");
+            tracing::info!(body = %crate::error::Redacted("my private search"), "search");
+        });
+        let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        for secret in [
+            "BQDsecretAccess123",
+            "AQDsecretRefresh456",
+            "AQCsecretCode789",
+            "my private search",
+        ] {
+            assert!(!out.contains(secret), "leaked {secret} in:\n{out}");
+        }
+        assert!(out.contains("token debug"));
+    }
+
+    #[test]
     fn leaves_plain_lines_alone() {
         let l = "loaded 42 playlists in 12ms";
         assert_eq!(redact_line(l), l);

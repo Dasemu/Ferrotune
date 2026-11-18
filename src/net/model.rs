@@ -157,11 +157,26 @@ pub struct Page<T> {
     pub items: Vec<T>,
     pub offset: u32,
     pub total: u32,
+    /// Raw entries in the server page, including ones we dropped
+    /// (episodes, removed tracks). Paging continues from `offset + raw_len`.
+    #[serde(default)]
+    pub raw_len: u32,
 }
 
 impl<T> Page<T> {
+    pub fn new(items: Vec<T>, offset: u32, total: u32) -> Self {
+        let raw_len = items.len() as u32;
+        Self {
+            items,
+            offset,
+            total,
+            raw_len,
+        }
+    }
+
     pub fn next_offset(&self) -> Option<u32> {
-        super::paging::next_offset(self.offset, self.items.len(), self.total)
+        let len = (self.raw_len as usize).max(self.items.len());
+        super::paging::next_offset(self.offset, len, self.total)
     }
 }
 
@@ -205,11 +220,33 @@ pub struct Library {
 pub struct TrackList {
     pub tracks: Vec<Track>,
     pub total: u32,
+    /// Offset of the next server page, if any.
+    #[serde(default)]
+    pub next: Option<u32>,
 }
 
 impl TrackList {
+    pub fn from_page(page: Page<Track>) -> Self {
+        Self {
+            next: page.next_offset(),
+            total: page.total,
+            tracks: page.items,
+        }
+    }
+
+    /// Append the next page if it is the one we asked for.
+    pub fn append(&mut self, page: Page<Track>) -> bool {
+        if self.next != Some(page.offset) {
+            return false;
+        }
+        self.next = page.next_offset();
+        self.total = page.total;
+        self.tracks.extend(page.items);
+        true
+    }
+
     pub fn has_more(&self) -> bool {
-        (self.tracks.len() as u32) < self.total
+        self.next.is_some()
     }
 }
 
