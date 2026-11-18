@@ -41,7 +41,7 @@ impl DecodedImage {
 /// Mean RGB of an RGBA buffer, sampled for speed.
 pub fn average_color(rgba: &[u8]) -> [u8; 3] {
     let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
-    for px in rgba.chunks_exact(4).step_by(7) {
+    for px in rgba.as_chunks::<4>().0.iter().step_by(7) {
         r += u64::from(px[0]);
         g += u64::from(px[1]);
         b += u64::from(px[2]);
