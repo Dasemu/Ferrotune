@@ -17,6 +17,13 @@ fn usage() -> ! {
 
 fn main() -> iced::Result {
     let started = Instant::now();
+    if std::env::var_os("ICED_BACKEND").is_none() {
+        // The CPU renderer keeps idle RSS well under the 150 MB budget
+        // (~46 MB vs ~200 MB with wgpu on Mesa lavapipe). Users can opt into
+        // the GPU renderer with ICED_BACKEND=wgpu.
+        // SAFETY: called first thing in main, before any thread is spawned.
+        unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
+    }
     let mut mock = false;
     let mut screenshot = None;
     let mut args = std::env::args().skip(1);

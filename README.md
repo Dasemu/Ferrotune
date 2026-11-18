@@ -57,6 +57,7 @@ or put it in `~/.config/ferrotune/config.json`:
 | Theme | `FERRO_THEME` (`dark`/`light`) | `dark` |
 | Startup timing | `FERRO_TRACE_STARTUP=1` | off |
 | Log filter | `RUST_LOG` | `info` |
+| Renderer | `ICED_BACKEND` (`tiny-skia`/`wgpu`) | `tiny-skia` (lowest memory) |
 
 ## Build and run
 
