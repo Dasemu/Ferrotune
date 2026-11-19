@@ -245,9 +245,11 @@ pub struct FerroTheme { pub palette: Palette, pub metrics: Metrics, pub dark: bo
 ### Ferrotune
 
 **Library choice.** `librespot` 0.8 (`core`, `playback`, `metadata`,
-`protocol`) for audio; the Spotify Web API over `reqwest` for everything
-the UI lists; own OAuth PKCE implementation (`auth/oauth.rs`); `mpris-server`
-0.9 (zbus 5) for MPRIS. Details in `docs/protocol.md`.
+`protocol`, `connect`). One session, opened with the desktop client id after
+a zero-config browser login (own PKCE implementation, `auth/oauth.rs`), carries
+audio, Spotify Connect and the session-authenticated internal APIs (spclient
+protobuf, pathfinder GraphQL, over `reqwest`). The public Web API is not used.
+`mpris-server` 0.9 (zbus 5) provides MPRIS. Details in `docs/protocol.md`.
 
 **Module map.**
 
@@ -255,9 +257,10 @@ the UI lists; own OAuth PKCE implementation (`auth/oauth.rs`); `mpris-server`
 |---|---|
 | `app/` | `mod.rs` (App, boot, update, subscription), `message.rs`, `state.rs` (Queue, Nav, Playback, backoff), `images.rs` (LRU of decoded art, 48 MB) |
 | `ui/` | `theme.rs`, `icons.rs`, `widgets.rs`, `login.rs`, `topbar.rs`, `sidebar.rs`, `home.rs`, `search.rs`, `library.rs`, `collection.rs` (playlist/album/liked), `artist.rs`, `queue.rs`, `now_playing.rs` |
-| `net/` | `webapi.rs`, `types.rs` (wire), `model.rs` (domain), `paging.rs`, `playback.rs` (librespot + mock engine), `mpris.rs`, `images.rs` |
-| `store/` | `mod.rs`, `schema.sql` (`entity` JSON blobs by kind/id, `kv` settings) |
-| `auth/` | `mod.rs` (AuthState), `oauth.rs` (PKCE, loopback listener, token endpoint), `secrets.rs` |
+| `net/` | `session.rs` (librespot session, Connect device, `LiveAuth`), `client.rs` (authenticated HTTP: cache, coalescing, 429/401 handling), `tokens.rs`, `backend.rs` (Catalog/Library/Search/Home/Lyrics traits), `spclient.rs`, `pathfinder.rs`, `proto.rs` (collection2v2 codec), `types.rs` (wire → domain), `model.rs`, `paging.rs`, `playback.rs` (local + Connect players, mock engine), `mpris.rs`, `images.rs` |
+| `store/` | `mod.rs`, `schema.sql` (`entity` JSON blobs by kind/id, `kv` settings), `schema_v2.sql` (`http_cache`) |
+| `auth/` | `mod.rs` (AuthState: silent login → browser fallback), `oauth.rs` (PKCE, loopback listener, code exchange), `secrets.rs` |
+| other | `desktop.rs` (.desktop entry + icon installer) |
 
 **Long-lived subscriptions.** Playback engine events
 (`Subscription::run_with(EngineKind, ..)`), MPRIS commands (Linux), a 500 ms
@@ -266,9 +269,9 @@ tick only while playing or a toast is visible.
 **Screens and navigation.**
 
 ```
-Login ──(PKCE)──▶ Main layout
+Login ──(keyring creds, silent │ browser PKCE)──▶ librespot session ──▶ Main layout
 Main layout = Top bar (back/forward, Home, Search) + Sidebar (Your Library)
-            + Main panel (Route) + optional Queue panel + Now-playing bar
+            + Main panel (Route) + optional Queue or Lyrics panel + Now-playing bar
 Route: Home | Search | Library | Liked | Playlist(id) | Album(id) | Artist(id)
 Back/forward history: app::state::Nav (max 50 entries)
 ```

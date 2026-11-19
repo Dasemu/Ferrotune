@@ -2,6 +2,24 @@
 
 Things learned while building Ferrotune. Add new entries at the top.
 
+- **One identity beats two.** v0.2 needed a developer-dashboard app for the
+  Web API on top of librespot's session. Users rejected that. Everything now
+  goes through the librespot session (desktop client id, login5 tokens,
+  spclient/pathfinder), so there is one login, one token source and nothing
+  to configure.
+- **Persisted-query hashes are a moving target.** Keep them in one module,
+  allow overriding them from a file, map "PersistedQueryNotFound" to a typed
+  error, and always keep an spclient fallback so the screen still works.
+- **`Spirc::new` connects the session itself.** Create the session
+  unconnected and let Spirc connect it. If Connect fails for any reason other
+  than bad credentials, start over with a plain session.
+- **librespot-protocol does not compile every .proto.** collection2v2 is
+  missing; a small hand-written codec with wire-level tests is cheaper than a
+  protobuf code generator.
+- **Cooldown after long 429s.** Sleeping through a 2-minute `Retry-After`
+  inside a request freezes the UI. Fail fast for the remaining time instead,
+  and serve stale cache where there is one.
+
 - **Dead librespot sessions are silent.** After suspend/resume or a network
   drop every `load` came back `Unavailable` and the app skipped the whole
   queue. The engine now polls `Session::is_invalid()` / `Player::is_invalid()`

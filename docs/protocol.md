@@ -1,99 +1,163 @@
 # Protocol notes (Ferrotune)
 
-Ferrotune talks to three things: the Spotify **accounts** service (OAuth),
-the Spotify **Web API** (metadata, library, search) and the Spotify
-**access points** via librespot (audio). On Linux it also serves **MPRIS**
-on the session bus.
+Ferrotune talks to Spotify the way the official desktop client does: **one
+librespot session**, opened with the desktop client id, is the only identity.
+It carries audio (access points), Spotify Connect (dealer + connect-state),
+and the session-authenticated HTTP calls to Spotify's internal **spclient**
+and **pathfinder** (GraphQL) endpoints. The public Web API
+(`api.spotify.com/v1`) is **not** used. On Linux Ferrotune also serves
+**MPRIS** on the session bus.
 
-## 1. Login: OAuth 2.0 Authorization Code + PKCE
+Nothing here is an official, documented API. Every endpoint below was
+verified only against the recorded/hand-built fixtures in `tests/` (there is
+no Spotify account in CI). Spotify can change any of them at any time.
 
-Implemented in `src/auth/oauth.rs` (own implementation, ~300 lines, so
-every piece is unit-tested; `librespot-oauth` is not used).
+## 1. Login
 
-1. Generate a 64-char verifier from the RFC 7636 unreserved set and its
-   S256 challenge (`BASE64URL(SHA256(verifier))`, no padding). Verified
-   against the RFC 7636 Appendix B test vector.
-2. Generate a random `state` (16 bytes, base64url).
-3. Open `https://accounts.spotify.com/authorize?client_id=…&response_type=code&redirect_uri=http://127.0.0.1:8898/login&code_challenge_method=S256&code_challenge=…&state=…&scope=…`
-   with `xdg-open` / `open` / `rundll32`; the URL can also be copied.
-4. A tokio `TcpListener` on `127.0.0.1:<port>` accepts the browser redirect,
-   checks `state`, handles `error=access_denied`, ignores `/favicon.ico`,
-   answers with a small HTML page and returns the code (5 min timeout).
-5. `POST /api/token` (form): `grant_type=authorization_code, code,
-   redirect_uri, client_id, code_verifier` → `access_token`,
-   `refresh_token`, `expires_in`.
-6. Refresh: `grant_type=refresh_token, refresh_token, client_id`. If no new
-   refresh token is returned the old one is kept. `invalid_grant` is treated
-   as "session revoked" → keyring cleared, back to the login screen.
+Implemented in `src/auth/oauth.rs` (PKCE + loopback listener) and
+`src/net/session.rs` (librespot session). `librespot-oauth` is not used,
+because our listener is hardened (below) and it would pull in `oauth2` and `open`.
 
-Scopes: `streaming user-read-private user-library-read user-library-modify
-playlist-read-private playlist-read-collaborative user-follow-read
-user-top-read user-read-recently-played`.
-
-The client id comes from `FERROTUNE_CLIENT_ID` or `config.json`; users
-register their own app (README). Spotify only accepts `127.0.0.1` loopback
-redirect URIs.
+1. **Client id:** `librespot_core::SessionConfig::default().client_id`, the
+   public desktop ("keymaster") client id that librespot, ncspot and
+   spotify-player use (`65b708073fc0480ea92a077233ca87bd` in librespot 0.8).
+   It is read from librespot, not hard-coded.
+2. **Redirect:** `http://127.0.0.1:8898/login`, the form librespot's
+   `librespot-oauth` example uses with this client id. Spotify requires the
+   literal `127.0.0.1`.
+3. **Scopes:** the list the `librespot` binary requests (`streaming`,
+   `user-library-*`, `playlist-*`, `user-read-*`, ... see `config::SCOPES`).
+4. PKCE: a 64-character verifier, an S256 challenge and a random 16-byte `state`.
+   The loopback listener binds **before** the browser opens, answers 400 and
+   keeps listening on anything without our `state` (favicon, stray or hostile
+   local requests), has a 2 s per-connection read timeout and a 5 min overall
+   timeout.
+5. `POST accounts.spotify.com/api/token` exchanges the code. The access token
+   is used **once**: `Credentials::with_access_token` opens the librespot
+   session. It is never stored, and no refresh token is kept.
+6. After connecting, librespot's reusable credentials
+   (`session.auth_data()`, `AUTHENTICATION_STORED_SPOTIFY_CREDENTIALS`) are
+   written to the keyring. Next start: silent login with them, no browser.
+   If the access point refuses them (`PermissionDenied`), they are deleted and
+   the login screen explains that the browser login is needed again. Network
+   failures keep them, and "Log in" retries silently.
 
 ### Keyring entries (service `dev.ferro.ferrotune`)
 
 | Account key | Content |
 |---|---|
-| `oauth` | JSON `{access_token, refresh_token, expires_at, scope}` |
-| `librespot` | JSON `{username, auth_data(base64)}` — librespot reusable credentials |
+| `librespot` | JSON `{username, auth_data(base64)}`, librespot's reusable credentials |
+| `oauth` | legacy (Web-API releases); deleted on start and logout |
 
-Nothing else is persisted; the SQLite cache contains no credentials.
+Nothing else is persisted. The SQLite cache contains no credentials.
 
-## 2. Web API (`src/net/webapi.rs`)
+### Advanced: your own client id
 
-Base `https://api.spotify.com/v1`, `Authorization: Bearer <token>`.
+`FERROTUNE_CLIENT_ID=<id>` replaces the desktop client id for the browser login
+and the session. It is not needed, and it is not mentioned in the UI. The app
+must accept `http://127.0.0.1:<FERROTUNE_REDIRECT_PORT or 8898>/login`.
+Tokens for spclient come from the session (login5) either way.
 
-| Screen | Endpoints |
-|---|---|
-| Profile | `GET /me` |
-| Library | `GET /me/playlists` (offset, 50), `GET /me/albums` (offset, 50), `GET /me/following?type=artist` (cursor `after`), `GET /me/tracks?limit=1` (count) |
-| Liked Songs | `GET /me/tracks?limit=50&offset=` (infinite scroll) |
-| Playlist | `GET /playlists/{id}` then `GET /playlists/{id}/tracks?limit=100&offset=` |
-| Album | `GET /albums/{id}` (+ `/albums/{id}/tracks` for > 50 tracks) |
-| Artist | `GET /artists/{id}`, `/artists/{id}/top-tracks?market=from_token`, `/artists/{id}/albums?include_groups=album,single` |
-| Search | `GET /search?q=&type=track,artist,album,playlist&limit=10` |
-| Home | `GET /me/player/recently-played`, `/me/top/artists`, `/me/top/tracks` |
-| Like | `PUT`/`DELETE /me/tracks?ids=`, `GET /me/tracks/contains?ids=` |
+## 2. Internal endpoints
 
-Robustness rules (all covered by `tests/webapi.rs`):
+All requests go through `net::client::InternalClient` with:
 
-- **Paging** is computed from `offset + raw entries` rather than the `next`
-  URL, so it works against a mock server and is not confused by entries we
-  drop (episodes, `null` tracks). Library lists are capped at 500.
-- **Lenient parsing:** list entries are parsed individually; unknown or
-  malformed entries are dropped. Playlist entries accept both `track` and
-  the newer `item` field name.
-- **401** → refresh once and retry; second 401 → revoked. Refresh is
-  single-flight: a request whose token was already replaced reuses the new one.
-- **429** → `Retry-After` ≤ 5 s is slept inline (max 3 tries), otherwise
-  `Error::RateLimited(secs)` is shown.
-- **5xx** → one retry after 300 ms.
-- Body-less `PUT`/`DELETE` send `Content-Length: 0` (Spotify answers 411
-  otherwise).
-- reqwest errors are stripped of their URL before they can be logged.
+- `Authorization: Bearer <token>`, where the token comes from the session's
+  **login5** (`session.login5().auth_token()`), the same source librespot's
+  own spclient and dealer use. Tokens are cached and refreshed before expiry.
+  A 401 triggers one **single-flight** refresh (parallel requests that hit the
+  401 share it).
+- `client-token: <session.spclient().client_token()>`.
+- `app-platform` (`Linux`/`OSX`/`Win32`), `spotify-app-version`
+  (`librespot_core::version::SPOTIFY_SEMANTIC_VERSION`, the version librespot
+  announces), `User-Agent` in librespot's own format, `Accept-Language` from
+  `LANG`.
+- No stealth: plain rustls/reqwest, no TLS-fingerprint tricks, and no
+  telemetry or event-sender traffic, real or fake.
 
-Playlist entries are read from `/playlists/{id}/tracks`; on 403/404 the
-client retries `/playlists/{id}/items` and otherwise shows an explicit
-"endpoint unavailable for this app" error.
+spclient host: resolved by the session (`spclient().base_url()`); pathfinder
+host: `https://api-partner.spotify.com`. Both can be overridden for tests
+(`FERROTUNE_SPCLIENT_URL`, `FERROTUNE_PATHFINDER_URL`).
 
-Spotify has restricted several endpoints for newly created apps over time
-(recommendations, featured playlists, related artists, browse categories).
-Ferrotune only uses endpoints that were available to development-mode apps
-when it was written; Home is built from the user's own history and top
-items, and Search's "Browse all" tiles are local genre shortcuts. Artist
-top tracks degrade to an empty list if refused.
+| Backend (trait) | Data | Endpoint | Format |
+|---|---|---|---|
+| `LibraryApi::me` | display name, avatar | `GET /user-profile-view/v3/profile/{user}` | JSON |
+| `LibraryApi::library` | sidebar playlists | `GET /playlist/v2/user/{user}/rootlist?decorate=revision,attributes,length,owner,capabilities,status_code&from=0&length=500` | playlist4 `SelectedListContent` |
+| `LibraryApi::library` / `saved_tracks` | Liked Songs + saved albums | `POST /collection/v2/paging` set `collection` (300/page), then `POST /collection/v2/delta` with the last sync token | collection2v2 (`application/vnd.collection-v2.spotify.proto`) |
+| `LibraryApi::library` | followed artists | same, set `artist` | collection2v2 |
+| `LibraryApi::set_saved` | like / unlike | `POST /collection/v2/write` | collection2v2 `WriteRequest` |
+| `LibraryApi::contains_saved` | heart state | answered from the synced collection index, with no request | — |
+| `CatalogApi::playlist(_tracks)` | playlist + entries | `GET /playlist/v2/playlist/{id}?from=&length=100` | playlist4 |
+| `CatalogApi::*` | track / album / artist metadata | `POST /extended-metadata/v0/extended-metadata`, **batched** (≤100 URIs), `TRACK_V4` / `ALBUM_V4` / `ARTIST_V4` | `BatchedEntityRequest` → `metadata.Track/Album/Artist` |
+| `LyricsApi` | synced lyrics | `GET /color-lyrics/v2/track/{id}?format=json&vocalRemoval=false&market=from_token` | JSON |
+| `SearchApi` | search | pathfinder `searchDesktop` (fallback: `GET /searchview/km/v4/search/{q}`) | JSON |
+| `HomeApi` | Home shelves | pathfinder `home` (fallback: `GET /recently-played/v3/user/{user}/recently-played`) | JSON |
+| — | cover art | `GET https://i.scdn.co/image/{file id hex}` | JPEG |
+
+The collection2v2 messages are not compiled into `librespot-protocol`, so a
+~150-line hand-written codec (`net/proto.rs`) encodes and decodes them. The
+codec has unit tests, including wire-level checks.
+
+### Resilience and request behaviour
+
+- **Cache (SQLite `http_cache`).** TTLs: metadata and profile 24 h,
+  playlists/rootlist 10 min, search 10 min, Home 30 min, recently played
+  5 min, lyrics 7 days. A fresh entry is served without a request. A stale entry
+  is served if the request fails (offline, 5xx, 429). Like/unlike updates the
+  local collection index directly.
+- **Collection sync** works like the desktop client: a full paging sync once,
+  then deltas from the persisted sync token (kept across restarts), at most
+  every 10 min.
+- **Coalescing:** identical in-flight requests (method + URL + body digest)
+  share one round trip.
+- **Concurrency:** at most 4 requests in flight; metadata is batched instead of
+  fetched per item. Opening a screen never fans out into dozens of calls.
+- **429:** `Retry-After` is honoured. Without the header, the backoff is
+  1 s → 2 s → 4 s. Waits up to 10 s are slept inline (max 3 attempts). Longer
+  waits put the client into a **cooldown**: requests fail fast with
+  "Spotify is limiting requests" instead of hammering the server.
+- **5xx:** one retry after 500 ms. **401:** one single-flight token refresh.
+- **Now playing** is driven only by librespot player events. Nothing polls
+  Spotify for playback state.
+- Internal APIs have server-side limits too. None of this guarantees
+  that requests will not be limited.
+
+### Pathfinder persisted queries
+
+`GET /pathfinder/v1/query?operationName=<op>&variables=<json>&extensions={"persistedQuery":{"version":1,"sha256Hash":"<hash>"}}`
+
+| Operation | Variables | Used for |
+|---|---|---|
+| `searchDesktop` | `searchTerm, offset 0, limit 10, numberOfTopResults 5, include* false` | Search |
+| `home` | `timeZone` (from `TZ`, else UTC), `sp_t ""`, `facet ""`, `sectionItemsLimit 10` | Home shelves |
+
+The hashes live **only** in `src/net/pathfinder.rs` (`DEFAULT_HASHES`). They
+are the last values known to us and are **unverified against the live
+service**. Spotify rotates them whenever the clients update. When a hash is
+rejected (`PersistedQueryNotFound` in `errors`, or HTTP 400/404/412), the call
+returns `Error::QueryRejected(op)` and the backend falls back to the spclient
+endpoint listed above, so Search and Home keep working with less detail.
+
+#### Refreshing persisted queries
+
+1. Open <https://open.spotify.com> in a desktop browser, log in, open the
+   developer tools → Network, and filter for `pathfinder`.
+2. Search for something (for `searchDesktop`), or load the Home page (for `home`).
+3. In the request URL or body, copy `extensions.persistedQuery.sha256Hash`.
+   Also check that `variables` still has the same names.
+4. Without rebuilding: put the hashes in
+   `~/.config/ferrotune/pathfinder.json`, e.g.
+   `{"searchDesktop": "<64 hex chars>", "home": "<64 hex chars>"}`.
+   Invalid entries are ignored with a log warning.
+5. For a release: update `DEFAULT_HASHES`. If the response shape changed,
+   update `parse_search` / `parse_home` and the fixtures
+   `tests/fixtures/pathfinder_*.json`.
 
 ## 3. Audio: librespot (`src/net/playback.rs`)
 
-- `librespot-core` `Session` connected with
-  `Credentials::with_access_token(web_api_token)` on first login (the token
-  carries the `streaming` scope), afterwards with the stored reusable
-  credentials (`AUTHENTICATION_STORED_SPOTIFY_CREDENTIALS`). No librespot
-  `Cache` is created, so librespot never writes credentials or audio to disk.
+- The session from §1 (`net/session.rs`). No librespot `Cache` is created,
+  so librespot never writes credentials or audio to disk. After a reconnect
+  the backends are re-bound to the new session (`Backend::rebind`).
 - `librespot-playback` `Player` with the `SoftMixer` (volume 0..1 →
   0..65535) and the **rodio** backend (ALSA on Linux, CoreAudio on macOS,
   WASAPI on Windows). TLS via rustls + webpki roots (no OpenSSL).
@@ -111,6 +175,27 @@ top tracks degrade to an empty list if refused.
   the current position, reconnects, and reloads the track on play instead
   of skipping "unavailable" tracks.
 - `--mock` uses `MockEngine`, a simulated clock with the same events.
+
+## 3a. Spotify Connect (`net/session.rs`, `net/playback.rs`)
+
+- `librespot-connect` 0.8 `Spirc` registers the device **"Ferrotune on
+  &lt;hostname&gt;"** (type Computer) with Spotify's connect-state service
+  over the session's dealer websocket. This is session-based Connect: no
+  zeroconf/mDNS discovery and no extra credentials. Phones and other clients
+  logged into the same account see the device. `FERROTUNE_CONNECT=0` or
+  `"connect": false` disables it.
+- `Spirc::new` opens the session itself, after registering its listeners. If
+  Connect fails for any reason other than bad credentials, Ferrotune logs a
+  warning and opens a plain session without it.
+- The Connect device has its own librespot `Player` and soft mixer. When
+  another device casts to Ferrotune, the engine pauses the local queue's
+  player, and the app shows the cast track ("Playing via Spotify Connect") in
+  the player bar and MPRIS. Transport controls, seek and volume are sent to
+  `Spirc` (`play/pause/next/prev/set_position_ms/set_volume`). Starting
+  anything locally calls `Spirc::disconnect(true)`, which takes playback back.
+- Not done yet: local playback is not published to connect-state, so other
+  devices do not see what Ferrotune plays locally, and Ferrotune cannot
+  control other devices.
 
 ## 4. MPRIS (`src/net/mpris.rs`, Linux only)
 
