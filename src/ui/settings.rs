@@ -149,6 +149,26 @@ pub fn view(app: &App) -> El<'_> {
             ),
         )],
     );
+    let window = section(
+        "Window",
+        vec![
+            setting_row(
+                "Close button keeps Ferrotune running in the tray",
+                Some("Music keeps playing. Without a system tray, closing quits."),
+                switch(s.close_to_tray, SettingChange::CloseToTray),
+            ),
+            setting_row(
+                "Start minimized to tray",
+                Some("Open with only the tray icon, no window."),
+                switch(s.start_minimized, SettingChange::StartMinimized),
+            ),
+            setting_row(
+                "Open Ferrotune at login",
+                Some("Adds an autostart entry that starts minimized."),
+                switch(app.autostart, SettingChange::Autostart),
+            ),
+        ],
+    );
     let size = app
         .cache_bytes
         .map(format_bytes)
@@ -194,6 +214,7 @@ pub fn view(app: &App) -> El<'_> {
             playback,
             connect,
             display,
+            window,
             storage,
             account,
         ]

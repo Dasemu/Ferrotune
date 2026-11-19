@@ -1,7 +1,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 //! Entry point: logging, config, `iced::application(..).run()`.
 //!
-//! Usage: `ferrotune [--mock] [--screenshot <screen> <out.png>] [--install-desktop-entry]`
+//! Usage: `ferrotune [--mock] [--minimized] [--screenshot <screen> <out.png>] [--install-desktop-entry]`
 //! Screens: login, home, search, library, playlist, album, artist, liked, queue, lyrics, connect, keyring,
 //! menu, shortcuts, rename.
 
@@ -9,11 +9,12 @@ use std::time::Instant;
 
 use ferrotune::app::{App, Options, ScreenshotPlan};
 use ferrotune::config::{APP_ID, Config};
+use ferrotune::tray::instance::{self, Role};
 use ferrotune::ui::{self, theme};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: ferrotune [--mock] [--screenshot <screen> <out.png>] [--install-desktop-entry]"
+        "usage: ferrotune [--mock] [--minimized] [--screenshot <screen> <out.png>] [--install-desktop-entry]"
     );
     std::process::exit(2);
 }
@@ -48,11 +49,13 @@ fn main() -> iced::Result {
         unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
     }
     let mut mock = false;
+    let mut minimized = false;
     let mut screenshot = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--mock" => mock = true,
+            "--minimized" => minimized = true,
             "--screenshot" => {
                 let (Some(screen), Some(out)) = (args.next(), args.next()) else {
                     usage()
@@ -72,32 +75,43 @@ fn main() -> iced::Result {
     ferrotune::logging::init((!mock).then(|| config.log_path()).as_deref());
     let ferro = theme::FerroTheme::new(config.theme);
     theme::set_current(ferro);
+    // One instance (and one tray icon): a second launch asks the running one
+    // to show its window and exits. Screenshots never take the lock.
+    if screenshot.is_none() {
+        let name = if mock {
+            format!("{APP_ID}.mock")
+        } else {
+            APP_ID.to_owned()
+        };
+        match instance::acquire(&name, !minimized) {
+            Role::Primary(p) => p.serve(instance::request_show_locally),
+            Role::Secondary => {
+                tracing::info!("already running; asked it to show its window");
+                return Ok(());
+            }
+        }
+    }
     let opts = Options {
         screenshot,
+        minimized,
         started: Some(started),
     };
 
-    iced::application(
+    // A daemon, not an application: hiding to the tray closes the window
+    // (freeing the renderer) while playback, Connect and MPRIS keep running.
+    iced::daemon(
         move || App::boot(config.clone(), opts.clone()),
         App::update,
-        ui::view,
+        ui::view_window,
     )
-    .title(App::title)
+    .title(|app: &App, _window: iced::window::Id| app.title())
     .subscription(App::subscription)
-    .theme(|app: &App| theme::FerroTheme::new(app.settings.theme).to_iced())
+    .theme(|app: &App, _window: iced::window::Id| {
+        theme::FerroTheme::new(app.settings.theme).to_iced()
+    })
     .font(theme::INTER_REGULAR)
     .font(theme::INTER_SEMIBOLD)
     .font(theme::INTER_BOLD)
     .default_font(theme::FONT)
-    .window(iced::window::Settings {
-        size: iced::Size::new(1280.0, 800.0),
-        min_size: Some(iced::Size::new(800.0, 600.0)),
-        platform_specific: iced::window::settings::PlatformSpecific {
-            #[cfg(target_os = "linux")]
-            application_id: APP_ID.to_owned(),
-            ..Default::default()
-        },
-        ..Default::default()
-    })
     .run()
 }
