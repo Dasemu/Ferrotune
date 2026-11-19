@@ -443,3 +443,29 @@ async fn oversized_image_is_rejected() {
     .unwrap_err();
     assert_eq!(err, Error::Protocol("image too large".into()));
 }
+
+#[tokio::test]
+async fn concurrent_401s_refresh_only_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .and(header("authorization", "Bearer stale"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .and(header("authorization", "Bearer BQD-fresh-access"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("me.json")))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("token.json")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let api = client(&server, tokens("stale", 3600), None);
+    let (a, b, c) = tokio::join!(api.me(), api.me(), api.me());
+    assert!(a.is_ok() && b.is_ok() && c.is_ok());
+}

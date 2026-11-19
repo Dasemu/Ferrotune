@@ -61,9 +61,16 @@ impl TokenManager {
         Ok(st.access_token.clone())
     }
 
-    /// Force a refresh (after a 401).
-    pub async fn refresh_now(&self) -> Result<Secret> {
+    /// Refresh after a 401 for a request made with `stale`.
+    ///
+    /// Single-flight: if another request already refreshed (the stored token
+    /// differs from `stale`), the new token is returned without hitting the
+    /// token endpoint again.
+    pub async fn refresh_now(&self, stale: &Secret) -> Result<Secret> {
         let mut st = self.state.lock().await;
+        if st.access_token != *stale {
+            return Ok(st.access_token.clone());
+        }
         if st.refresh_token.is_none() {
             return Err(Error::revoked("Session expired. Please log in again."));
         }
@@ -154,7 +161,7 @@ impl WebApi {
             match status {
                 StatusCode::UNAUTHORIZED if !refreshed => {
                     refreshed = true;
-                    token = self.tokens.refresh_now().await?;
+                    token = self.tokens.refresh_now(&token).await?;
                 }
                 StatusCode::TOO_MANY_REQUESTS => {
                     let wait = parse_retry_after(resp.headers().get(reqwest::header::RETRY_AFTER));
