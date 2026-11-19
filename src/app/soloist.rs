@@ -168,6 +168,15 @@ pub fn ws_commands(op: &ConnectOp, id_known: bool) -> Option<Vec<Command>> {
     })
 }
 
+/// Pressing play while another device (or none) is active: `activate`
+/// first, so Soloist becomes the active Spotify Connect device.
+pub fn with_activation(mut cmds: Vec<Command>, active: bool) -> Vec<Command> {
+    if !active && matches!(cmds.first(), Some(Command::Play(_))) {
+        cmds.insert(0, Command::Activate);
+    }
+    cmds
+}
+
 fn op_target(op: &ConnectOp) -> &str {
     match op {
         ConnectOp::Command(id, _) | ConnectOp::Transfer(id) | ConnectOp::Volume(id, _) => id,
@@ -254,6 +263,7 @@ impl App {
         }
         match ws_commands(&op, real_id.is_some()) {
             Some(cmds) => {
+                let cmds = with_activation(cmds, self.soloist.is_active);
                 if let Some(h) = &self.soloist.handle {
                     for c in cmds {
                         h.command(c);
@@ -289,10 +299,15 @@ impl App {
         let Some(key) = self.soloist.key.clone() else {
             return; // keyring not read yet
         };
+        let volume = (self.now_playback().volume.clamp(0.0, 1.0) * 100.0).round() as u8;
         h.send(Control::Configure {
             key,
-            device_name: self.settings_device_name(),
-            pipewire_device: self.soloist_output(),
+            opts: crate::net::soloist::LaunchOptions {
+                device_name: self.settings_device_name(),
+                pipewire_device: self.soloist_output(),
+                cache_mb: self.settings.soloist_cache_mb,
+                initial_volume: Some(volume),
+            },
         });
     }
 
@@ -752,6 +767,20 @@ mod tests {
         assert_eq!(
             ws_commands(&ConnectOp::Transfer("x".into()), false),
             Some(vec![Command::Activate])
+        );
+    }
+
+    #[test]
+    fn play_activates_an_inactive_soloist() {
+        let play = vec![Command::Play(Some("spotify:track:t".into()))];
+        assert_eq!(
+            with_activation(play.clone(), false),
+            vec![Command::Activate, play[0].clone()]
+        );
+        assert_eq!(with_activation(play.clone(), true), play);
+        assert_eq!(
+            with_activation(vec![Command::Pause], false),
+            vec![Command::Pause]
         );
     }
 

@@ -17,7 +17,8 @@ use std::io::{self, Read, Write};
 pub const BUILD_LIFETIME_DAYS: u64 = 90;
 pub const DAY_SECS: u64 = 86_400;
 
-/// Caps (the real binary is a few tens of MB).
+/// Caps. Soloist 1.3.10 for x86_64: 13.8 MB archive, 36 MB binary, flat
+/// layout (`CHANGELOG.md`, `THIRD_PARTY_LICENSES.txt`, `soloist`).
 #[derive(Debug, Clone, Copy)]
 pub struct Caps {
     /// Bytes unpacked from the gzip stream, all entries together.
@@ -29,8 +30,8 @@ pub struct Caps {
 impl Default for Caps {
     fn default() -> Self {
         Self {
-            max_unpacked: 512 * 1024 * 1024,
-            max_binary: 256 * 1024 * 1024,
+            max_unpacked: 256 * 1024 * 1024,
+            max_binary: 128 * 1024 * 1024,
         }
     }
 }
@@ -232,11 +233,14 @@ impl BuildInfo {
     }
 }
 
-/// Parse `--version` output. The documented content is "the Spotify
-/// Soloist version, build timestamp, build identifiers, platform, and
-/// architecture"; the exact layout is not documented, so this looks for the
-/// first dotted version number and the first ISO-8601 date (or a Unix
-/// timestamp on a line that mentions "build" or "time").
+/// Parse `--version` output. Soloist 1.3.10 prints one line:
+///
+/// `soloist 1.3.10.87 build 1795111339 (20261119) (g19412df6ea) (linux/x86_64)`
+///
+/// The build date is the 8-digit `(YYYYMMDD)`. The layout is not
+/// documented, so this stays lenient: the first dotted version number, and
+/// for the date `(YYYYMMDD)`, else an ISO-8601 date, else a Unix timestamp
+/// on a line that mentions "build" or "time".
 pub fn parse_version(out: &str) -> BuildInfo {
     let mut info = BuildInfo::default();
     for line in out.lines().take(64) {
@@ -245,12 +249,14 @@ pub fn parse_version(out: &str) -> BuildInfo {
             info.version = find_version(line);
         }
         if info.built_unix.is_none() {
-            info.built_unix = find_iso_datetime(line).or_else(|| {
-                let l = line.to_ascii_lowercase();
-                (l.contains("build") || l.contains("time"))
-                    .then(|| find_epoch(line))
-                    .flatten()
-            });
+            info.built_unix = find_compact_date(line)
+                .or_else(|| find_iso_datetime(line))
+                .or_else(|| {
+                    let l = line.to_ascii_lowercase();
+                    (l.contains("build") || l.contains("time"))
+                        .then(|| find_epoch(line))
+                        .flatten()
+                });
         }
     }
     info
@@ -280,6 +286,23 @@ fn find_version(line: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// `(YYYYMMDD)`, midnight UTC.
+fn find_compact_date(line: &str) -> Option<u64> {
+    line.split('(').skip(1).find_map(|part| {
+        let d = part.split(')').next()?.trim();
+        if d.len() != 8 || !d.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let y: i64 = d[0..4].parse().ok()?;
+        let m: u32 = d[4..6].parse().ok()?;
+        let day: u32 = d[6..8].parse().ok()?;
+        if y < 2000 || !(1..=12).contains(&m) || !(1..=31).contains(&day) {
+            return None;
+        }
+        Some(days_from_civil(y, m, day).max(0) as u64 * DAY_SECS)
+    })
 }
 
 fn looks_like_date(s: &str) -> bool {
@@ -473,6 +496,22 @@ pub mod tests {
         // Truncated gzip.
         let gz = targz(&[tar_entry("soloist", b'0', &[1u8; 90])]);
         assert!(extract(&gz[..gz.len() / 2], caps).is_err());
+    }
+
+    /// `soloist --version` of the real 1.3.10 Linux x86_64 build.
+    const REAL_VERSION: &str =
+        "soloist 1.3.10.87 build 1795111339 (20261119) (g19412df6ea) (linux/x86_64)\n";
+
+    #[test]
+    fn real_version_output() {
+        let b = parse_version(REAL_VERSION);
+        assert_eq!(b.version.as_deref(), Some("1.3.10.87"));
+        let built = b.built_unix.unwrap();
+        assert_eq!(format_date(built), "2026-11-19");
+        assert_eq!(built % DAY_SECS, 0, "the date, not the build number");
+        assert_eq!(format_date(b.expires_unix().unwrap()), "2027-02-17");
+        // Bad compact dates are ignored.
+        assert_eq!(parse_version("soloist 1.0 (20261399)").built_unix, None);
     }
 
     #[test]

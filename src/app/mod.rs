@@ -4065,7 +4065,7 @@ mod tests {
         )));
         assert_eq!(
             ws_cmds(&mut ctl),
-            vec![SCmd::Play(Some(tracks[2].uri.clone()))]
+            vec![SCmd::Activate, SCmd::Play(Some(tracks[2].uri.clone()))]
         );
         assert!(drain_loads(&mut rx).is_empty(), "librespot plays nothing");
         assert!(app.soloist_playing_here());
@@ -4162,7 +4162,10 @@ mod tests {
         let _ = app.update(ui(Ui::PlayFrom(TrackSource::Album("al01".into()), None)));
         assert_eq!(
             ws_cmds(&mut ctl),
-            vec![SCmd::Play(Some("spotify:album:al01".into()))]
+            vec![
+                SCmd::Activate,
+                SCmd::Play(Some("spotify:album:al01".into()))
+            ]
         );
         // The picker lists Soloist as "This computer", not as a device.
         assert!(app.is_soloist_id("soloist-device-id"));
@@ -4189,7 +4192,7 @@ mod tests {
         let _ = app.update(sol(SoloistEvent::Status(EngineStatus::Ready)));
         assert_eq!(
             ws_cmds(&mut ctl),
-            vec![SCmd::Play(Some(tracks[1].uri.clone()))]
+            vec![SCmd::Activate, SCmd::Play(Some(tracks[1].uri.clone()))]
         );
         assert!(!app.soloist_card());
     }

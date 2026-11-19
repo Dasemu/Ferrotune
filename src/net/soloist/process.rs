@@ -1,10 +1,9 @@
 //! Running the `soloist` daemon as a child process.
 //!
-//! * [`build_command`] is pure: argv and environment for a [`LaunchSpec`].
-//!   The API key goes into `SOLOIST_API_KEY` when the binary's `--help`
-//!   says it reads it; otherwise into `--api-key` (the only documented
-//!   way, which makes it visible in `/proc/<pid>/cmdline` to processes of
-//!   the same user).
+//! * [`build_command`] is pure: argv for a [`LaunchSpec`]. The API key goes
+//!   into `--api-key`: Soloist 1.3.10's `--help` lists no environment
+//!   variable for it, so it is visible in `/proc/<pid>/cmdline` to
+//!   processes of the same user (never logged: see [`printable_args`]).
 //! * stdout/stderr are read line by line (capped), redacted (the key, plus
 //!   the app-wide token scrubber) and logged at debug level.
 //! * On Linux the child gets `PR_SET_PDEATHSIG`, so it dies with Ferrotune
@@ -20,8 +19,10 @@ use tokio::process::{Child, Command};
 
 use crate::auth::secrets::Secret;
 
-/// The environment variable the docs use for the key in their examples.
-pub const KEY_ENV: &str = "SOLOIST_API_KEY";
+/// Default `--cache-size` in MB (Soloist's own default is unlimited).
+pub const DEFAULT_CACHE_MB: u32 = 500;
+/// Soloist refuses a cache below 100 MB (`0` = unlimited, never used).
+pub const MIN_CACHE_MB: u32 = 100;
 /// Soloist's exit code for an expired build.
 pub const EXIT_EXPIRED: i32 = 10;
 /// Longest log line kept (Soloist output is untrusted).
@@ -35,18 +36,18 @@ pub struct LaunchSpec {
     pub cache_dir: PathBuf,
     /// PipeWire node name or id; `None` = the system default output.
     pub pipewire_device: Option<String>,
+    /// `--cache-size` in MB (clamped to at least [`MIN_CACHE_MB`]).
+    pub cache_mb: u32,
+    /// `--initial-volume` 0–100 (Soloist's default is 40).
+    pub initial_volume: Option<u8>,
     /// `--pair`: store a new session and exit.
     pub pair: bool,
-    /// Pass the key in `SOLOIST_API_KEY` instead of argv.
-    pub key_from_env: bool,
 }
 
-/// Argv (without the program) and extra environment.
+/// Argv (without the program).
 #[derive(Debug, PartialEq, Eq)]
 pub struct Invocation {
     pub args: Vec<OsString>,
-    /// `(name, value)`; values may be secret: never log them.
-    pub env: Vec<(String, String)>,
 }
 
 pub fn build_command(spec: &LaunchSpec, key: &Secret) -> Invocation {
@@ -57,12 +58,18 @@ pub fn build_command(spec: &LaunchSpec, key: &Secret) -> Invocation {
         spec.data_dir.clone().into_os_string(),
         "--cache-dir".into(),
         spec.cache_dir.clone().into_os_string(),
+        "--cache-size".into(),
+        spec.cache_mb.max(MIN_CACHE_MB).to_string().into(),
     ];
     if !spec.pair {
-        // Local control only, on a port the OS picks (read back from the
-        // ws.addr / ws.port files in the data dir).
+        // Local control only, on a port the OS picks (written back to
+        // `<data-dir>/ws.port`).
         args.push("--ws".into());
         args.push("127.0.0.1:0".into());
+        if let Some(v) = spec.initial_volume {
+            args.push("--initial-volume".into());
+            args.push(v.min(100).to_string().into());
+        }
     }
     if let Some(d) = spec
         .pipewire_device
@@ -75,14 +82,9 @@ pub fn build_command(spec: &LaunchSpec, key: &Secret) -> Invocation {
     if spec.pair {
         args.push("--pair".into());
     }
-    let mut env = Vec::new();
-    if spec.key_from_env {
-        env.push((KEY_ENV.to_owned(), key.expose().to_owned()));
-    } else {
-        args.push("--api-key".into());
-        args.push(key.expose().into());
-    }
-    Invocation { args, env }
+    args.push("--api-key".into());
+    args.push(key.expose().into());
+    Invocation { args }
 }
 
 /// The argv as it may be logged.
@@ -110,14 +112,10 @@ pub fn spawn(spec: &LaunchSpec, key: &Secret) -> std::io::Result<Child> {
     let inv = build_command(spec, key);
     let mut cmd = Command::new(&spec.binary);
     cmd.args(&inv.args)
-        .env_remove(KEY_ENV)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    for (k, v) in &inv.env {
-        cmd.env(k, v);
-    }
     #[cfg(target_os = "linux")]
     // SAFETY: only async-signal-safe libc calls between fork and exec.
     unsafe {
@@ -254,8 +252,9 @@ mod tests {
             data_dir: "/d".into(),
             cache_dir: "/c".into(),
             pipewire_device: None,
+            cache_mb: DEFAULT_CACHE_MB,
+            initial_volume: Some(70),
             pair: false,
-            key_from_env: false,
         }
     }
 
@@ -279,41 +278,47 @@ mod tests {
                 "/d",
                 "--cache-dir",
                 "/c",
+                "--cache-size",
+                "500",
                 "--ws",
                 "127.0.0.1:0",
+                "--initial-volume",
+                "70",
                 "--api-key",
                 "k3y-secret-value"
             ]
         );
-        assert!(inv.env.is_empty());
         let printed = printable_args(&inv, &key);
         assert!(!printed.contains("k3y-secret-value"), "{printed}");
         assert!(printed.contains("--api-key [REDACTED]"));
     }
 
     #[test]
-    fn env_key_and_options() {
+    fn pairing_and_options() {
         let key = Secret::new("k3y-secret-value");
         let inv = build_command(
             &LaunchSpec {
                 pipewire_device: Some(" alsa_output.usb ".into()),
+                cache_mb: 0,
                 pair: true,
-                key_from_env: true,
                 ..spec()
             },
             &key,
         );
         let a = strs(&inv);
-        assert!(!a.iter().any(|s| s.contains("k3y")), "key not in argv");
+        // Pairing: no WebSocket server, no initial volume.
+        assert!(!a.contains(&"--ws".to_owned()));
+        assert!(!a.contains(&"--initial-volume".to_owned()));
+        // Never an unlimited cache.
+        let i = a.iter().position(|s| s == "--cache-size").unwrap();
+        assert_eq!(a[i + 1], "100");
         assert!(a.ends_with(&[
             "--pipewire-device".into(),
             "alsa_output.usb".into(),
-            "--pair".into()
+            "--pair".into(),
+            "--api-key".into(),
+            "k3y-secret-value".into()
         ]));
-        assert_eq!(
-            inv.env,
-            vec![(KEY_ENV.to_owned(), "k3y-secret-value".to_owned())]
-        );
         // A blank device is the default output.
         let inv = build_command(
             &LaunchSpec {

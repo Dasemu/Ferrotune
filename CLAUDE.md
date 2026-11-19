@@ -68,7 +68,8 @@ ubuntu-22.04, and creates GitHub Release `v<Cargo version>` with `ferrotune-v<ve
 - Spotify Soloist (`net/soloist/`) is the local engine when librespot's key
   is refused: downloaded from Spotify's CDN on first use, NEVER bundled or
   committed (Spotify forbids redistribution). Its API key lives only in the
-  keyring (`KEY_SOLOIST`) and reaches the child via `--api-key` (or
-  `SOLOIST_API_KEY` if `--help` documents it); never log argv unredacted.
+  keyring (`KEY_SOLOIST`) and reaches the child only via `--api-key`
+  (1.3.10 has no env var for it); never log argv unredacted. Always pass
+  `--cache-size` (Soloist's default cache is unlimited).
   With `engine = soloist`, no Spirc and no local librespot player: the
   Connect controller opens its own dealer (`SessionOptions::controller`).

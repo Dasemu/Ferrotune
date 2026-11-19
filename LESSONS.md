@@ -12,10 +12,10 @@ Things learned while building Ferrotune. Add new entries at the top.
 - **The dealer does not need Spirc.** The connect-state observer only needs
   a dealer connection id; `dealer().listen_for("hm://pusher/v1/connections/")`
   plus `dealer().start()` gives one without announcing a playable device.
-- **Undocumented output needs lenient parsers and a fallback.** Soloist's
-  `--version` layout is not documented: parse the first version number and
-  the first ISO date, and fall back to the archive's `Last-Modified` for the
-  90-day expiry.
+- **Undocumented output needs lenient parsers and a fallback, then a
+  fixture from the real thing.** The guessed `--version` layout (ISO date)
+  was wrong: 1.3.10 prints `(YYYYMMDD)`. Keep the real line as a unit-test
+  fixture, and keep the `Last-Modified` fallback for the 90-day expiry.
 - **Use `ksni` with `async-io`, not its default `tokio` feature.** `ksni/tokio`
   turns on `zbus/tokio` for the whole build, and then keyring's blocking
   Secret Service connect panics ("Cannot start a runtime from within a

@@ -103,6 +103,8 @@ pub struct FileConfig {
     pub engine: Option<AudioEngine>,
     /// PipeWire node for Spotify Soloist (empty = default output).
     pub soloist_output: Option<String>,
+    /// Spotify Soloist audio cache in MB (default 500, at least 100).
+    pub soloist_cache_mb: Option<u32>,
     /// Closing the window keeps Ferrotune running in the tray (default true).
     pub close_to_tray: Option<bool>,
     /// Start with no window, only the tray icon (default false).
@@ -125,6 +127,8 @@ pub struct Settings {
     pub engine: AudioEngine,
     /// PipeWire node name or id for Spotify Soloist; empty = default.
     pub soloist_output: String,
+    /// Spotify Soloist `--cache-size` in MB (never unlimited).
+    pub soloist_cache_mb: u32,
     /// Closing the window hides it to the tray while a tray exists.
     pub close_to_tray: bool,
     /// Launch with only the tray icon, no window.
@@ -144,6 +148,7 @@ impl Default for Settings {
             connect: true,
             engine: AudioEngine::Builtin,
             soloist_output: String::new(),
+            soloist_cache_mb: crate::net::soloist::process::DEFAULT_CACHE_MB,
             close_to_tray: true,
             start_minimized: false,
         }
@@ -171,6 +176,7 @@ impl Settings {
             m.insert("connect".into(), self.connect.into());
             m.insert("engine".into(), v(serde_json::to_value(self.engine)));
             m.insert("soloist_output".into(), self.soloist_output.clone().into());
+            m.insert("soloist_cache_mb".into(), self.soloist_cache_mb.into());
             m.insert("close_to_tray".into(), self.close_to_tray.into());
             m.insert("start_minimized".into(), self.start_minimized.into());
         }
@@ -273,6 +279,10 @@ impl Config {
                         .collect()
                 })
                 .unwrap_or_default(),
+            soloist_cache_mb: file
+                .soloist_cache_mb
+                .unwrap_or(crate::net::soloist::process::DEFAULT_CACHE_MB)
+                .clamp(crate::net::soloist::process::MIN_CACHE_MB, 100_000),
             close_to_tray: file.close_to_tray.unwrap_or(true),
             start_minimized: file.start_minimized.unwrap_or(false),
         };
@@ -562,6 +572,7 @@ mod tests {
             connect: true,
             engine: AudioEngine::Soloist,
             soloist_output: "alsa_output.usb".into(),
+            soloist_cache_mb: 1000,
             close_to_tray: false,
             start_minimized: true,
         };

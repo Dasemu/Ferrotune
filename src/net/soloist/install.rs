@@ -27,7 +27,7 @@ use crate::error::{Error, Result};
 /// Spotify's public download host (docs: "Downloads and updates").
 pub const CDN_BASE: &str = "https://soloist-builds.spotifycdn.com";
 /// Largest archive we download (the real one is far smaller).
-pub const MAX_ARCHIVE: u64 = 200 * 1024 * 1024;
+pub const MAX_ARCHIVE: u64 = 128 * 1024 * 1024;
 /// `--version` must answer within this time.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -98,8 +98,6 @@ pub struct InstallMeta {
     pub last_modified: Option<String>,
     /// Last time the CDN was asked for a newer build.
     pub checked_unix: u64,
-    /// `--help` documents reading the key from `SOLOIST_API_KEY`.
-    pub key_from_env: bool,
 }
 
 impl InstallMeta {
@@ -185,10 +183,11 @@ pub async fn fetch(
     prepare_dirs(paths)?;
     let mut req = http.get(url);
     if let Some(m) = current.filter(|_| paths.binary().exists()) {
+        // The CDN sends both (`cache-control: private, max-age=0`); the
+        // ETag is exact, `Last-Modified` only the fallback.
         if let Some(e) = &m.etag {
             req = req.header(reqwest::header::IF_NONE_MATCH, e);
-        }
-        if let Some(l) = &m.last_modified {
+        } else if let Some(l) = &m.last_modified {
             req = req.header(reqwest::header::IF_MODIFIED_SINCE, l);
         }
     }
@@ -270,7 +269,6 @@ pub async fn fetch(
         etag,
         last_modified,
         checked_unix: now_unix(),
-        key_from_env: info.key_from_env,
     };
     meta.save(paths)?;
     Ok(Fetched::Installed(meta))
@@ -301,12 +299,9 @@ fn extract_to(archive_path: &Path, out_path: &Path) -> Result<()> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Probe {
     pub version: BuildInfo,
-    pub key_from_env: bool,
 }
 
-/// Run `--version` (must succeed) and `--help` (best effort) with a
-/// timeout. The help text decides whether the API key can be passed in the
-/// environment instead of argv.
+/// Run `--version` (must succeed) with a timeout.
 pub async fn probe(bin: &Path) -> Result<Probe> {
     let out = run_capture(bin, "--version").await?;
     if !out.0 {
@@ -314,22 +309,8 @@ pub async fn probe(bin: &Path) -> Result<Probe> {
             "the downloaded Soloist does not run on this computer".into(),
         ));
     }
-    let help = run_capture(bin, "--help")
-        .await
-        .map(|h| h.1)
-        .unwrap_or_default();
     Ok(Probe {
         version: archive::parse_version(&out.1),
-        key_from_env: help_reads_env_key(&help),
-    })
-}
-
-/// True when `--help` says the key can come from `SOLOIST_API_KEY` (e.g.
-/// clap's `[env: SOLOIST_API_KEY=]`). The docs only show `--api-key`.
-pub fn help_reads_env_key(help: &str) -> bool {
-    help.lines().any(|l| {
-        let l = l.to_ascii_lowercase();
-        l.contains("soloist_api_key") && (l.contains("env") || l.contains("environment"))
     })
 }
 
@@ -339,7 +320,6 @@ async fn run_capture(bin: &Path, arg: &str) -> Result<(bool, String)> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .env_remove("SOLOIST_API_KEY")
         .kill_on_drop(true);
     // A freshly written executable can briefly be "busy" (ETXTBSY) while a
     // process forked elsewhere still holds the write handle: retry.
@@ -422,16 +402,5 @@ mod tests {
             ..InstallMeta::default()
         };
         assert_eq!(meta.expires_unix(), 95 * day);
-    }
-
-    #[test]
-    fn env_key_detection() {
-        assert!(help_reads_env_key(
-            "  -k, --api-key <KEY>  API key [env: SOLOIST_API_KEY=]"
-        ));
-        assert!(!help_reads_env_key(
-            "  -k, --api-key KEY  Spotify Soloist API key"
-        ));
-        assert!(!help_reads_env_key(""));
     }
 }

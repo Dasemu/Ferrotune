@@ -353,10 +353,13 @@ opens that page and takes the pasted key. Keyring entry `soloist-api-key`;
 **Install.** `https://soloist-builds.spotifycdn.com/soloist_release_<arch>.tar.gz`
 (`x86_64`, `arm64`, `arm32`, `osx_arm64`; Windows ships a .zip and is not
 handled) is downloaded on first use into
-`$XDG_DATA_HOME/ferrotune/soloist/` (dir mode 0700): streamed to
-`download.part` (≤ 200 MB), then only the regular file `soloist` (top level
-or one directory deep; no links, no `..`) is extracted (≤ 256 MB binary,
-≤ 512 MB unpacked in total, header checksums verified) to `bin/soloist.new`,
+`$XDG_DATA_HOME/ferrotune/soloist/` (dir mode 0700). Verified on 1.3.10
+(x86_64): a 13.8 MB gzip archive (served as `application/x-tar`) with a flat
+layout (`CHANGELOG.md`, `THIRD_PARTY_LICENSES.txt`, `soloist`), and a 36 MB
+binary linked only against libc, libm and libatomic. It is streamed to
+`download.part` (≤ 128 MB), then only the regular file `soloist` (top level
+or one directory deep; no links, no `..`) is extracted (≤ 128 MB binary,
+≤ 256 MB unpacked in total, header checksums verified) to `bin/soloist.new`,
 made `0755`, run with `--version` (10 s timeout), and renamed over
 `bin/soloist`. `build.json` keeps version, build time, ETag/Last-Modified and
 the last check. **Never bundled or redistributed**: Spotify's documentation
@@ -365,21 +368,31 @@ forbids it, so each user's machine fetches it from Spotify.
 **Expiry and updates.** Builds expire 90 days after their build date; an
 expired build exits with code 10. The documentation names no version
 endpoint, only "download the build again and replace the executable", so
-Ferrotune asks the same URL with a conditional GET (`If-None-Match` /
-`If-Modified-Since`): `304` = nothing new. Checks run at start when due and
-hourly while running: daily, every 6 h in the last 14 days, always after
-expiry; **Update now** forces one; exit code 10 forces one and restarts. A
-build older than the installed one is never installed. The build date comes
-from `--version` (lenient parser: first dotted version, first ISO-8601 date
-or Unix timestamp); without one, the archive's `Last-Modified`.
+Ferrotune asks the same URL with a conditional GET: `If-None-Match` with
+the stored ETag (`If-Modified-Since` only when there is none); `304` =
+nothing new. Verified: the CDN sends `etag`, `last-modified` and
+`cache-control: private, max-age=0`, and answers both conditionals with 304.
+Checks run at start when due and hourly while running: daily, every 6 h in
+the last 14 days, always after expiry; **Update now** forces one; exit code
+10 forces one and restarts. A build older than the installed one is never
+installed. The build date comes from `--version`, which for 1.3.10 prints
+`soloist 1.3.10.87 build 1795111339 (20261119) (g19412df6ea) (linux/x86_64)`:
+the version is the first dotted number and the build date the 8-digit
+`(YYYYMMDD)`, so this build expires 2027-02-17. The parser stays lenient (ISO
+dates and Unix timestamps also work); without a date, the archive's
+`Last-Modified` stands in.
 
 **Process.** `soloist --device-name "<Connect device name>" --data-dir
-<root>/data --cache-dir <cache>/soloist --ws 127.0.0.1:0 [--pipewire-device
-<node>] --api-key <key>`. The name is Ferrotune's Connect device name
-(Settings, default "Ferrotune on &lt;host&gt;"). Only `--api-key` is
-documented, which leaves the key visible in `/proc/<pid>/cmdline` to the same
-user; if a build's `--help` mentions `SOLOIST_API_KEY` as an environment
-variable, the key goes there instead. stdout/stderr are logged at debug level
+<root>/data --cache-dir <cache>/soloist --cache-size 500 --ws 127.0.0.1:0
+[--initial-volume <0-100>] [--pipewire-device <node>] --api-key <key>`. The
+name is Ferrotune's Connect device name (Settings, default "Ferrotune on
+&lt;host&gt;"). `--cache-size` is `soloist_cache_mb` in `config.json`
+(default 500, at least 100): Soloist's own default is unlimited.
+`--initial-volume` is Ferrotune's last volume (a volume change alone never
+restarts the daemon). Soloist 1.3.10's `--help` lists no environment variable
+for the key, only `-k/--api-key`, so the key is visible in
+`/proc/<pid>/cmdline` to processes of the same user. Other flags it accepts
+and Ferrotune does not use: `-s/--single-track`, `-v/--verbose`. stdout/stderr are logged at debug level
 under target `soloist`, lines capped at 2 KB, with the key replaced by
 `[REDACTED]` (plus the global token scrubber). On Linux the child gets
 `PR_SET_PDEATHSIG(SIGTERM)`; quit sends SIGTERM (3 s grace, then SIGKILL).
@@ -387,12 +400,17 @@ A `soloist.pid` left by a crashed run is stopped only if `/proc/<pid>/exe` is
 our binary. Crashes restart with backoff 1 s → 60 s (reset after 60 s up).
 Re-pair runs `--pair` (no `--ws`) and restarts the daemon when it exits.
 
-**WebSocket API.** Endpoint from `ws.addr` / `ws.port` in the data dir
-(loopback only, stale files removed before each start), frames ≤ 1 MB.
+**WebSocket API.** `--ws 127.0.0.1:0` makes Soloist write the OS-assigned
+port to `<data-dir>/ws.port` (`soloist ctl` reads `ws.addr` / `ws.port`
+too). Ferrotune reads `ws.port` and `ws.addr` when present, else
+127.0.0.1 (loopback only; stale files removed before each start), frames
+≤ 1 MB.
 Commands (`{"type":"command","command":…}`): `play` (+`uri`), `pause`,
 `skip_next`, `skip_prev`, `seek` (`position_ms`), `set_volume` (0–100),
 `set_shuffle`, `set_repeat_track`/`set_repeat_context` (the documented
-pairs), `add_to_queue` (tracks), `activate`, `get_state`. Events:
+pairs), `add_to_queue` (tracks), `activate`, `get_state`. `play` (with or
+without a URI) is preceded by `activate` when Soloist is not the active
+device, so pressing play in Ferrotune moves playback to this computer. Events:
 `auth_state` (logged_in → Ready, else Needs pairing), `playback_state`,
 `track_changed`, `playback_changed`, `position_sync` (position extrapolated
 from `timestamp_ms` × `speed`), `volume_changed`, `options_changed`,
@@ -420,10 +438,14 @@ credentials, which Spotify does not document for third parties. The card
 asks the user to pick the device once in the Spotify app on their phone and
 disappears when `auth_state.logged_in` turns true.
 
-**Unverified.** No real Soloist build or account was available: the
-WebSocket shapes follow the reference examples, `--version` output and
-`--help` are guessed, pairing and audio were never exercised, and the CDN's
-caching headers (ETag / Last-Modified) are assumed.
+**Verified against the real 1.3.10 build** (without running it): the
+archive layout and sizes, our extractor on the real archive (an opt-in test,
+`FERROTUNE_SOLOIST_ARCHIVE=… cargo test --test soloist real_archive --
+--ignored`), the CDN headers and 304 answers, and the `--version` / `--help`
+text (taken from the binary's output). **Unverified:** the binary was never
+started here, so the WebSocket greeting and event shapes (written from the
+reference examples), `soloist ctl` output, pairing, audio and Soloist's
+memory use are not checked.
 
 ## 3b. Keyboard shortcuts, menus, dialogs
 

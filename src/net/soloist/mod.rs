@@ -121,14 +121,47 @@ impl From<&InstallMeta> for BuildView {
     }
 }
 
+/// How the daemon is launched (besides the key).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchOptions {
+    /// The Spotify Connect name (Ferrotune's device name).
+    pub device_name: String,
+    /// PipeWire node; `None` = default output.
+    pub pipewire_device: Option<String>,
+    /// `--cache-size` in MB.
+    pub cache_mb: u32,
+    /// `--initial-volume` 0–100: Ferrotune's last volume.
+    pub initial_volume: Option<u8>,
+}
+
+impl Default for LaunchOptions {
+    fn default() -> Self {
+        Self {
+            device_name: crate::config::APP_NAME.to_owned(),
+            pipewire_device: None,
+            cache_mb: process::DEFAULT_CACHE_MB,
+            initial_volume: None,
+        }
+    }
+}
+
+impl LaunchOptions {
+    /// Same daemon: the initial volume alone never restarts it (it only
+    /// matters at the next start).
+    fn same_daemon(&self, other: &Self) -> bool {
+        self.device_name == other.device_name
+            && self.pipewire_device == other.pipewire_device
+            && self.cache_mb == other.cache_mb
+    }
+}
+
 /// What the app asks of the supervisor.
 pub enum Control {
-    /// (Re)start with this key, name and output. `key: None` stops the
-    /// engine and reports `NeedsKey`.
+    /// (Re)start with this key and options. `key: None` stops the engine
+    /// and reports `NeedsKey`.
     Configure {
         key: Option<Secret>,
-        device_name: String,
-        pipewire_device: Option<String>,
+        opts: LaunchOptions,
     },
     UpdateNow,
     /// Run `--pair` (replaces the stored session), then restart.
@@ -262,8 +295,7 @@ pub struct Supervisor {
     http: reqwest::Client,
     events: mpsc::UnboundedSender<SoloistEvent>,
     key: Option<Secret>,
-    device_name: String,
-    pipewire_device: Option<String>,
+    opts: LaunchOptions,
     meta: Option<InstallMeta>,
     status: EngineStatus,
     crashes: u32,
@@ -293,8 +325,7 @@ impl Supervisor {
             http: http_client(),
             events,
             key: None,
-            device_name: crate::config::APP_NAME.to_owned(),
-            pipewire_device: None,
+            opts: LaunchOptions::default(),
             meta,
             status: EngineStatus::Off,
             crashes: 0,
@@ -316,12 +347,13 @@ impl Supervisor {
     fn spec(&self, pair: bool) -> LaunchSpec {
         LaunchSpec {
             binary: self.paths.binary(),
-            device_name: self.device_name.clone(),
+            device_name: self.opts.device_name.clone(),
             data_dir: self.paths.data(),
             cache_dir: self.paths.cache.clone(),
-            pipewire_device: self.pipewire_device.clone(),
+            pipewire_device: self.opts.pipewire_device.clone(),
+            cache_mb: self.opts.cache_mb,
+            initial_volume: self.opts.initial_volume,
             pair,
-            key_from_env: self.meta.as_ref().is_some_and(|m| m.key_from_env),
         }
     }
 
@@ -398,13 +430,8 @@ async fn run(mut sup: Supervisor, mut ctl: mpsc::UnboundedReceiver<Control>) {
             // Wait for the app (Configure / Pair / UpdateNow).
             let Some(c) = ctl.recv().await else { return };
             match c {
-                Control::Configure {
-                    key,
-                    device_name,
-                    pipewire_device,
-                } => {
-                    sup.device_name = device_name;
-                    sup.pipewire_device = pipewire_device;
+                Control::Configure { key, opts } => {
+                    sup.opts = opts;
                     sup.key = key;
                     sup.crashes = 0;
                 }
@@ -477,12 +504,10 @@ async fn run_daemon(sup: &mut Supervisor, ctl: &mut mpsc::UnboundedReceiver<Cont
         tokio::select! {
             c = ctl.recv() => match c {
                 None | Some(Control::Shutdown) => break Stop::Shutdown,
-                Some(Control::Configure { key, device_name, pipewire_device }) => {
-                    let unchanged = sup.device_name == device_name
-                        && sup.pipewire_device == pipewire_device
+                Some(Control::Configure { key, opts }) => {
+                    let unchanged = sup.opts.same_daemon(&opts)
                         && sup.key.as_ref().map(Secret::expose) == key.as_ref().map(Secret::expose);
-                    sup.device_name = device_name;
-                    sup.pipewire_device = pipewire_device;
+                    sup.opts = opts;
                     sup.key = key;
                     if unchanged {
                         continue;
@@ -607,9 +632,8 @@ async fn wait_or_retry(sup: &mut Supervisor, ctl: &mut mpsc::UnboundedReceiver<C
             () = &mut sleep => return Stop::Restart,
             c = ctl.recv() => match c {
                 None | Some(Control::Shutdown) => return Stop::Shutdown,
-                Some(Control::Configure { key, device_name, pipewire_device }) => {
-                    sup.device_name = device_name;
-                    sup.pipewire_device = pipewire_device;
+                Some(Control::Configure { key, opts }) => {
+                    sup.opts = opts;
                     sup.key = key;
                     sup.crashes = 0;
                     return if sup.key.is_some() { Stop::Restart } else { Stop::Idle };
@@ -666,9 +690,8 @@ async fn run_pair(sup: &mut Supervisor, ctl: &mut mpsc::UnboundedReceiver<Contro
                     return Stop::Shutdown;
                 }
                 // Cancel pairing: back to the normal daemon.
-                Some(Control::Configure { key, device_name, pipewire_device }) => {
-                    sup.device_name = device_name;
-                    sup.pipewire_device = pipewire_device;
+                Some(Control::Configure { key, opts }) => {
+                    sup.opts = opts;
                     sup.key = key;
                     let _ = process::terminate(&mut child, STOP_GRACE).await;
                     return if sup.key.is_some() { Stop::Restart } else { Stop::Idle };
@@ -862,12 +885,8 @@ async fn run_mock(
     let mut device_name = String::new();
     while let Some(c) = ctl.recv().await {
         match c {
-            Control::Configure {
-                key,
-                device_name: name,
-                ..
-            } => {
-                device_name = name;
+            Control::Configure { key, opts } => {
+                device_name = opts.device_name;
                 if key.is_none() {
                     m.status = EngineStatus::NeedsKey;
                     send(SoloistEvent::Status(m.status.clone()));
@@ -935,11 +954,25 @@ mod tests {
     }
 
     #[test]
+    fn initial_volume_alone_does_not_restart() {
+        let a = LaunchOptions::default();
+        let b = LaunchOptions {
+            initial_volume: Some(80),
+            ..a.clone()
+        };
+        assert!(a.same_daemon(&b));
+        let c = LaunchOptions {
+            cache_mb: 1000,
+            ..a.clone()
+        };
+        assert!(!a.same_daemon(&c));
+    }
+
+    #[test]
     fn control_debug_hides_the_key() {
         let c = Control::Configure {
             key: Some(Secret::new("super-secret-key")),
-            device_name: "d".into(),
-            pipewire_device: None,
+            opts: LaunchOptions::default(),
         };
         let s = format!("{c:?}");
         assert!(!s.contains("super-secret"), "{s}");

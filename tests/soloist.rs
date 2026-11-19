@@ -25,7 +25,7 @@ use ferrotune::auth::secrets::Secret;
 use ferrotune::net::soloist::install::{self, Fetched, Paths};
 use ferrotune::net::soloist::protocol::{Command, Event, RepeatMode, repeat_commands};
 use ferrotune::net::soloist::{
-    self, Control, EngineStatus, SoloistEvent, SoloistHandle, SoloistKind,
+    self, Control, EngineStatus, LaunchOptions, SoloistEvent, SoloistHandle, SoloistKind,
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
@@ -101,10 +101,13 @@ fn targz(script: &str) -> Vec<u8> {
     gz.finish().unwrap()
 }
 
-/// A fake `soloist`: answers --version/--help, prints its argv (with the
-/// key), writes ws.addr/ws.port pointing at the fake WebSocket server and
-/// stays alive. With `expire_once`, the first daemon start exits with 10.
+/// A fake `soloist`: answers --version in the real 1.3.10 format, prints
+/// its argv (with the key), writes `ws.port` (only that file, like the real
+/// `--ws 127.0.0.1:0`) pointing at the fake WebSocket server and stays
+/// alive. With `expire_once`, the first daemon start exits with 10.
 fn fake_soloist(version: &str, built: &str, ws_port: u16, expire_once: bool) -> String {
+    // `built` is ISO (2026-10-01T…); Soloist prints it as (20261001).
+    let compact = built[..10].replace('-', "");
     let expire = if expire_once {
         r#"if [ ! -e "$DATA/expired-once" ]; then : > "$DATA/expired-once"; echo "build expired"; exit 10; fi"#
     } else {
@@ -113,11 +116,10 @@ fn fake_soloist(version: &str, built: &str, ws_port: u16, expire_once: bool) -> 
     format!(
         r#"#!/bin/sh
 case "$1" in
-  --version) echo "Spotify Soloist {version} (build abc123)"; echo "built: {built}"; echo "linux x86_64"; exit 0;;
+  --version) echo "soloist {version} build 1795111339 ({compact}) (g19412df6ea) (linux/x86_64)"; exit 0;;
   --help) echo "usage: soloist -n NAME -k KEY [options]"; exit 0;;
 esac
 echo "fake soloist argv: $*"
-echo "env key: ${{SOLOIST_API_KEY:-none}}" >&2
 DATA=""
 for a in "$@"; do
   if [ "$prev" = "--data-dir" ]; then DATA="$a"; fi
@@ -126,7 +128,6 @@ done
 echo "$*" > "$DATA/argv"
 {expire}
 echo $$ > "$DATA/fake.pid"
-printf 127.0.0.1 > "$DATA/ws.addr"
 printf {ws_port} > "$DATA/ws.port"
 exec sleep 600
 "#
@@ -240,8 +241,10 @@ async fn recv_json(rx: &mut mpsc::UnboundedReceiver<Value>) -> Value {
 fn configure(device: &str) -> Control {
     Control::Configure {
         key: Some(Secret::new(KEY)),
-        device_name: device.into(),
-        pipewire_device: None,
+        opts: LaunchOptions {
+            device_name: device.into(),
+            ..LaunchOptions::default()
+        },
     }
 }
 
@@ -307,7 +310,6 @@ async fn install_update_and_caps_against_a_fake_cdn() {
         "2026-12-30"
     );
     assert_eq!(meta.etag.as_deref(), Some("\"v1\""));
-    assert!(!meta.key_from_env);
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(paths.binary())
         .unwrap()
@@ -389,8 +391,7 @@ async fn supervisor_runs_controls_and_stops_the_daemon() {
     // Without a key: NeedsKey, nothing is downloaded.
     h.send(Control::Configure {
         key: None,
-        device_name: "x".into(),
-        pipewire_device: None,
+        opts: LaunchOptions::default(),
     });
     until(&mut ev, 5, status_is(EngineStatus::NeedsKey)).await;
     assert!(!paths.binary().exists());
@@ -407,14 +408,13 @@ async fn supervisor_runs_controls_and_stops_the_daemon() {
     // auth_state logged_in=false on connect: the device must be paired.
     until(&mut ev, 10, status_is(EngineStatus::NeedsPairing)).await;
 
-    // The documented argv; the key is in argv because --help does not
-    // mention SOLOIST_API_KEY.
+    // The argv from `soloist --help` (1.3.10); the key can only go in argv.
     let data = paths.data();
     let argv = std::fs::read_to_string(data.join("argv")).unwrap();
     assert_eq!(
         argv.trim(),
         format!(
-            "--device-name Ferrotune on test --data-dir {} --cache-dir {} --ws 127.0.0.1:0 --api-key {KEY}",
+            "--device-name Ferrotune on test --data-dir {} --cache-dir {} --cache-size 500 --ws 127.0.0.1:0 --api-key {KEY}",
             data.display(),
             paths.cache.display()
         )
@@ -583,4 +583,24 @@ async fn pair_mode_runs_without_websocket_and_restarts() {
     h.send(Control::Shutdown);
     tokio::time::sleep(Duration::from_millis(500)).await;
     let _ = std::fs::remove_dir_all(paths.root.parent().unwrap());
+}
+
+/// Extracts a real Soloist archive (never runs it). Opt-in:
+/// `FERROTUNE_SOLOIST_ARCHIVE=/path/soloist_release_x86_64.tar.gz
+///  cargo test --test soloist real_archive -- --ignored`
+#[test]
+#[ignore = "needs a downloaded Soloist archive"]
+fn real_archive_extracts_only_the_binary() {
+    use ferrotune::net::soloist::archive::{Caps, extract_binary};
+    let Ok(path) = std::env::var("FERROTUNE_SOLOIST_ARCHIVE") else {
+        eprintln!("FERROTUNE_SOLOIST_ARCHIVE not set");
+        return;
+    };
+    let input = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+    let mut out = Vec::new();
+    let size = extract_binary(input, &mut out, Caps::default()).unwrap();
+    assert_eq!(size as usize, out.len());
+    assert!(size > 10 * 1024 * 1024, "the real binary is tens of MB");
+    assert_eq!(&out[..4], b"\x7fELF");
+    eprintln!("extracted soloist: {size} bytes");
 }

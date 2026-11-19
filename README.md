@@ -165,6 +165,8 @@ Good to know:
   memory use is shown in Settings → Playback.
 - **Output device** in Settings takes a PipeWire node name or id; empty means
   the system default.
+- Soloist's audio cache is capped at 500 MB (`"soloist_cache_mb"` in
+  `config.json`, at least 100).
 - Soloist needs PipeWire or PulseAudio on Linux, and the phone must be on the
   same network for the one-time pairing.
 - Builds exist for Linux x86_64 / arm64 / armv7 and Apple Silicon macOS.

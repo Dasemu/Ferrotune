@@ -29,7 +29,10 @@ pub fn read_endpoint(data_dir: &Path) -> Option<SocketAddr> {
         let s = std::fs::read_to_string(data_dir.join(f)).ok()?;
         (s.len() < 128).then_some(s)
     };
-    parse_endpoint(&read("ws.addr")?, &read("ws.port")?)
+    // `--ws 127.0.0.1:0` writes the OS-assigned port to `ws.port`;
+    // `ws.addr` may be absent, and we always bind loopback.
+    let addr = read("ws.addr").unwrap_or_else(|| "127.0.0.1".to_owned());
+    parse_endpoint(&addr, &read("ws.port")?)
 }
 
 /// Remove endpoint files a crashed instance left behind, so discovery
@@ -137,6 +140,13 @@ mod tests {
         assert_eq!(read_endpoint(&dir), Some("127.0.0.1:4567".parse().unwrap()));
         clear_endpoint(&dir);
         assert_eq!(read_endpoint(&dir), None);
+        // Soloist 1.3.10 with `--ws 127.0.0.1:0`: only `ws.port`.
+        std::fs::write(dir.join("ws.port"), "40123\n").unwrap();
+        assert_eq!(
+            read_endpoint(&dir),
+            Some("127.0.0.1:40123".parse().unwrap())
+        );
+        clear_endpoint(&dir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
