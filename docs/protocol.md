@@ -24,7 +24,10 @@ because our listener is hardened (below) and it would pull in `oauth2` and `open
    It is read from librespot, not hard-coded.
 2. **Redirect:** `http://127.0.0.1:8898/login`, the form librespot's
    `librespot-oauth` example uses with this client id. Spotify requires the
-   literal `127.0.0.1`.
+   literal `127.0.0.1`. Neither librespot-oauth's docs nor its code say
+   whether other ports are accepted for this id, so Ferrotune does not
+   auto-try other ports. A busy port shows an error that explains
+   `FERROTUNE_REDIRECT_PORT` (unverified for other ports).
 3. **Scopes:** the list the `librespot` binary requests (`streaming`,
    `user-library-*`, `playlist-*`, `user-read-*`, ... see `config::SCOPES`).
 4. PKCE: a 64-character verifier, an S256 challenge and a random 16-byte `state`.
@@ -68,6 +71,9 @@ All requests go through `net::client::InternalClient` with:
   A 401 triggers one **single-flight** refresh (parallel requests that hit the
   401 share it).
 - `client-token: <session.spclient().client_token()>`.
+- Endpoint overrides (`FERROTUNE_SPCLIENT_URL`, `FERROTUNE_PATHFINDER_URL`)
+  receive the session token, so only `https://` (or `http://` on loopback,
+  for local test servers) is accepted.
 - `app-platform` (`Linux`/`OSX`/`Win32`), `spotify-app-version`
   (`librespot_core::version::SPOTIFY_SEMANTIC_VERSION`, the version librespot
   announces), `User-Agent` in librespot's own format, `Accept-Language` from
@@ -110,12 +116,19 @@ codec has unit tests, including wire-level checks.
   every 10 min.
 - **Coalescing:** identical in-flight requests (method + URL + body digest)
   share one round trip.
+- **Size limits:** a response over 2 MB is never cached, and the cache keeps
+  at most 64 MB / 3000 responses, dropping the oldest first.
 - **Concurrency:** at most 4 requests in flight; metadata is batched instead of
   fetched per item. Opening a screen never fans out into dozens of calls.
 - **429:** `Retry-After` is honoured. Without the header, the backoff is
   1 s → 2 s → 4 s. Waits up to 10 s are slept inline (max 3 attempts). Longer
-  waits put the client into a **cooldown**: requests fail fast with
-  "Spotify is limiting requests" instead of hammering the server.
+  waits put that **endpoint family** (first spclient path segment, or
+  pathfinder) into a **cooldown**. Requests to it fail fast with "Spotify is
+  limiting requests" instead of hammering the server, so a search 429 does not
+  block collection writes. Server values are clamped to 15 min.
+- **Coalescing runs detached:** each network request runs in its own task, so
+  a caller that goes away (screen closed) never leaves a request or its
+  concurrency permit parked.
 - **5xx:** one retry after 500 ms. **401:** one single-flight token refresh.
 - **Now playing** is driven only by librespot player events. Nothing polls
   Spotify for playback state.
@@ -131,12 +144,15 @@ codec has unit tests, including wire-level checks.
 | `searchDesktop` | `searchTerm, offset 0, limit 10, numberOfTopResults 5, include* false` | Search |
 | `home` | `timeZone` (from `TZ`, else UTC), `sp_t ""`, `facet ""`, `sectionItemsLimit 10` | Home shelves |
 
-The hashes live **only** in `src/net/pathfinder.rs` (`DEFAULT_HASHES`). They
-are the last values known to us and are **unverified against the live
-service**. Spotify rotates them whenever the clients update. When a hash is
+The hashes live **only** in `src/net/pathfinder.rs` (`DEFAULT_HASHES`).
+**They ship as unverified defaults:** they are the last values known to us
+and have never been checked against the live service. Spotify rotates them whenever the clients update. When a hash is
 rejected (`PersistedQueryNotFound` in `errors`, or HTTP 400/404/412), the call
-returns `Error::QueryRejected(op)` and the backend falls back to the spclient
-endpoint listed above, so Search and Home keep working with less detail.
+returns `Error::QueryRejected(op)`. That, or any other failure except being
+offline or in a rate-limit cooldown (401, 403, 5xx, unexpected shapes),
+makes the backend fall back to the spclient endpoint listed above, so Search
+and Home keep working with less detail. A 200 that carries GraphQL `errors`
+or null `data` is never cached.
 
 #### Refreshing persisted queries
 
@@ -193,6 +209,21 @@ endpoint listed above, so Search and Home keep working with less detail.
   the player bar and MPRIS. Transport controls, seek and volume are sent to
   `Spirc` (`play/pause/next/prev/set_position_ms/set_volume`). Starting
   anything locally calls `Spirc::disconnect(true)`, which takes playback back.
+- **Device id:** a random 40-hex id is created once and stored in the cache
+  database (`kv.device_id`). It is reused by every session, so the phone does
+  not list a new "Ferrotune" after each restart.
+- **Two audio streams:** the Connect device has its own `Player`, because
+  `Spirc` treats every event of its player as its own and cannot share one
+  with the app's queue. Only one of them plays at a time: a cast pauses the
+  local player from its first `TrackChanged`/`Loading`/`Playing`. With
+  PipeWire or PulseAudio (the default on Plasma) both can hold the device. On
+  bare ALSA hardware without dmix, which allows one opener only, the second
+  stream may fail to open until the first is released (unverified).
+- **Login failures:** librespot reports every access-point refusal as
+  `PermissionDenied`. Only "Bad credentials" deletes the stored login.
+  "Premium account required" keeps it and explains Premium, and
+  TryAnotherAP / CouldNotValidateCredentials / ProtocolError are treated as
+  temporary.
 - Not done yet: local playback is not published to connect-state, so other
   devices do not see what Ferrotune plays locally, and Ferrotune cannot
   control other devices.

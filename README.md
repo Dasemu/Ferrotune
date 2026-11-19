@@ -51,9 +51,15 @@ Premium accounts.
    [librespot](https://github.com/librespot-org/librespot) session, then keeps
    only librespot's reusable credentials, in the OS keyring (Secret Service:
    KWallet / GNOME Keyring). Nothing secret is written to disk or to logs.
-3. On the next start the session opens silently from the keyring. If Spotify
-   rejects the stored credentials (for example after a password change), they
-   are deleted and the next click opens the browser again.
+3. On the next start the session opens silently from the keyring. Only if
+   Spotify answers "bad credentials" (for example after a password change)
+   are they deleted, and the next click opens the browser again. Temporary
+   errors keep them.
+4. If no keyring is available, Ferrotune shows how to enable KDE Wallet or
+   GNOME Keyring, with a **Try again** button. It never falls back to a file.
+5. If port 8898 is already in use, the login screen says so. Close the other
+   program or set `FERROTUNE_REDIRECT_PORT`. Other ports have not been verified
+   to work with the desktop client id; 8898 is the one librespot documents.
 
 Behind the scenes:
 
@@ -66,6 +72,14 @@ Behind the scenes:
   through that one session and the internal endpoints the desktop client
   uses. Ferrotune does not use the public Web API (`api.spotify.com`).
   [docs/protocol.md](docs/protocol.md) lists every endpoint.
+- The `spotify-app-version`, `app-platform` and User-Agent values are the
+  ones librespot itself announces (taken from `librespot_core::version`), not
+  invented by Ferrotune.
+- **Search and Home use GraphQL persisted-query hashes that ship as
+  unverified defaults.** Nobody has checked them against the live service.
+  When Spotify rejects them, Ferrotune falls back to older endpoints with
+  less detail. [docs/protocol.md](docs/protocol.md) explains how to refresh
+  them without rebuilding.
 - **This is not an official integration.** Spotify can break it at any time,
   and it may violate Spotify's terms. Internal APIs have server-side limits
   too. Ferrotune caches responses, honours `Retry-After` and avoids request
@@ -86,7 +100,7 @@ cargo build --release
 ```
 
 Screens for `--screenshot`:
-`login home search library playlist album artist liked queue lyrics connect`.
+`login home search library playlist album artist liked queue lyrics connect keyring`.
 
 ### Desktop entry and icon
 
