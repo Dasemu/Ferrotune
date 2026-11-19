@@ -6,6 +6,7 @@ pub mod home;
 pub mod icons;
 pub mod library;
 pub mod login;
+pub mod lyrics;
 pub mod now_playing;
 pub mod queue;
 pub mod search;
@@ -32,6 +33,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .height(Length::Fill);
     if app.show_queue {
         panels = panels.push(queue::view(app));
+    } else if app.show_lyrics {
+        panels = panels.push(lyrics::view(app));
     }
     let body = column![topbar::view(app), panels, now_playing::view(app)]
         .spacing(0)

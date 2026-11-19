@@ -12,12 +12,16 @@ pub enum Error {
     /// The server answered with something we did not expect.
     #[error("protocol error: {0}")]
     Protocol(String),
-    /// HTTP error status from the Web API (status code + short reason).
+    /// HTTP error status from Spotify (status code + short reason).
     #[error("http {status}: {message}")]
     Http { status: u16, message: String },
-    /// Rate limited by the Web API; retry after the given number of seconds.
+    /// Rate limited by Spotify; retry after the given number of seconds.
     #[error("rate limited, retry after {0}s")]
     RateLimited(u64),
+    /// A GraphQL persisted query (operation name) was rejected: its hash is
+    /// stale or the response shape changed.
+    #[error("persisted query rejected: {0}")]
+    QueryRejected(String),
     /// Login / token problems. `revoked` means the session is gone for good.
     #[error("authentication error: {message}")]
     Auth { message: String, revoked: bool },
@@ -60,11 +64,16 @@ impl Error {
             Self::Net(_) => "Can't reach Spotify. Check your connection.".into(),
             Self::Protocol(_) => "Spotify sent an unexpected response.".into(),
             Self::Http { status: 403, .. } => {
-                "Spotify refused the request (Premium and an allow-listed app are required).".into()
+                "Spotify refused the request (a Premium account is required).".into()
             }
             Self::Http { status: 404, .. } => "That item is not available.".into(),
             Self::Http { status, .. } => format!("Spotify returned an error ({status})."),
-            Self::RateLimited(s) => format!("Too many requests. Retrying in {s}s."),
+            Self::RateLimited(s) => {
+                format!("Spotify is limiting requests. Try again in {s}s.")
+            }
+            Self::QueryRejected(op) => format!(
+                "Spotify changed an internal API ({op}). Some results may be missing until Ferrotune is updated."
+            ),
             Self::Auth { message, .. } => message.clone(),
             Self::Store(_) => "The local cache could not be read.".into(),
             Self::Keyring(m) => format!("System keyring unavailable: {m}"),

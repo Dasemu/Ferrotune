@@ -1,7 +1,5 @@
 //! Home: greeting, shortcut tiles and card rows.
 
-use std::collections::HashSet;
-
 use iced::widget::{button, column, container, row};
 use iced::{Alignment, Length, Padding};
 
@@ -11,8 +9,8 @@ use super::widgets::{
     El, art, bold, card, card_row, clipped, label, liked_art, loading, section, semibold, vspace,
 };
 use crate::app::state::Route;
-use crate::app::{App, Message, TrackSource, Ui, ui};
-use crate::net::model::Image;
+use crate::app::{App, Message, Ui, ui};
+use crate::net::model::{Card, Image};
 
 fn greeting() -> &'static str {
     let secs = crate::auth::oauth::now_secs();
@@ -22,6 +20,42 @@ fn greeting() -> &'static str {
         5..=11 => "Good morning",
         12..=17 => "Good afternoon",
         _ => "Good evening",
+    }
+}
+
+fn home_card<'a>(app: &'a App, c: &'a Card) -> El<'a> {
+    match c {
+        Card::Playlist(p) => card(
+            app,
+            &p.images,
+            &p.name,
+            if p.description.is_empty() {
+                p.owner.clone()
+            } else {
+                p.description.clone()
+            },
+            false,
+            Icon::Music,
+            ui(Ui::Navigate(Route::Playlist(p.id.clone()))),
+        ),
+        Card::Album(a) => card(
+            app,
+            &a.images,
+            &a.name,
+            a.artist_line(),
+            false,
+            Icon::Disc,
+            ui(Ui::Navigate(Route::Album(a.id.clone()))),
+        ),
+        Card::Artist(a) => card(
+            app,
+            &a.images,
+            &a.name,
+            "Artist".into(),
+            true,
+            Icon::User,
+            ui(Ui::Navigate(Route::Artist(a.id.clone()))),
+        ),
     }
 }
 
@@ -102,73 +136,18 @@ pub fn view(app: &App) -> El<'_> {
         None if app.loading.contains(&Route::Home) => col = col.push(loading()),
         None => {}
         Some(h) => {
-            // "Jump back in": unique albums of recently played tracks.
-            let mut seen = HashSet::new();
-            let recent: Vec<El<'_>> = h
-                .recent_tracks
-                .iter()
-                .filter_map(|t| t.album.as_ref())
-                .filter(|a| seen.insert(a.id.clone()))
-                .take(6)
-                .map(|a| {
-                    card(
-                        app,
-                        &a.images,
-                        &a.name,
-                        "Album".into(),
-                        false,
-                        Icon::Disc,
-                        ui(Ui::Navigate(Route::Album(a.id.clone()))),
-                    )
-                })
-                .collect();
-            if !recent.is_empty() {
-                col = col
-                    .push(vspace(32.0))
-                    .push(section("Jump back in", card_row(recent)));
-            }
-            let artists: Vec<El<'_>> = h
-                .top_artists
-                .iter()
-                .take(6)
-                .map(|a| {
-                    card(
-                        app,
-                        &a.images,
-                        &a.name,
-                        "Artist".into(),
-                        true,
-                        Icon::User,
-                        ui(Ui::Navigate(Route::Artist(a.id.clone()))),
-                    )
-                })
-                .collect();
-            if !artists.is_empty() {
-                col = col
-                    .push(vspace(24.0))
-                    .push(section("Your top artists", card_row(artists)));
-            }
-            let tops: Vec<El<'_>> = h
-                .top_tracks
-                .iter()
-                .enumerate()
-                .take(6)
-                .map(|(i, t)| {
-                    card(
-                        app,
-                        t.images(),
-                        &t.name,
-                        t.artist_line(),
-                        false,
-                        Icon::Music,
-                        ui(Ui::PlayFrom(TrackSource::HomeTop, Some(i))),
-                    )
-                })
-                .collect();
-            if !tops.is_empty() {
-                col = col
-                    .push(vspace(24.0))
-                    .push(section("On repeat", card_row(tops)));
+            for shelf in &h.shelves {
+                let cards: Vec<El<'_>> = shelf
+                    .items
+                    .iter()
+                    .take(6)
+                    .map(|c| home_card(app, c))
+                    .collect();
+                if !cards.is_empty() {
+                    col = col
+                        .push(vspace(24.0))
+                        .push(section(&shelf.title, card_row(cards)));
+                }
             }
         }
     }

@@ -1,516 +1,576 @@
-//! Spotify Web API wire types (serde) and their conversion to domain types.
+//! Wire types of Spotify's internal endpoints and their conversion to the
+//! domain types in `net::model`.
 //!
-//! The wire structs are deliberately lenient: every field that Spotify may
-//! omit or null is an `Option` or has a default, and list entries that may
-//! be `null` (search results, removed playlist items) are `Option<T>`.
+//! * spclient metadata and playlists are protobuf (`librespot-protocol`
+//!   messages: `metadata.Track/Album/Artist`, `playlist4.SelectedListContent`).
+//! * pathfinder (GraphQL) and a few spclient views are JSON; those are read
+//!   leniently through `serde_json::Value` pointers because their shapes
+//!   change over time. An entry we cannot understand is dropped, never fatal.
 
-use serde::Deserialize;
+use librespot_protocol::metadata;
+use librespot_protocol::playlist4_external::SelectedListContent;
+use serde_json::Value;
 
-use super::model;
+use super::model::{
+    Album, AlbumKind, AlbumRef, Artist, ArtistRef, Image, LyricLine, Lyrics, Playlist, Track,
+};
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct Image {
-    pub url: String,
-    #[serde(default)]
-    pub width: Option<u32>,
-    #[serde(default)]
-    pub height: Option<u32>,
+pub const IMAGE_CDN: &str = "https://i.scdn.co/image/";
+
+/// 16-byte gid -> base62 id.
+pub fn gid_to_id(gid: &[u8]) -> Option<String> {
+    librespot_core::SpotifyId::from_raw(gid)
+        .ok()?
+        .to_base62()
+        .ok()
 }
 
-impl From<Image> for model::Image {
-    fn from(i: Image) -> Self {
-        Self {
-            url: i.url,
-            width: i.width,
-            height: i.height,
+/// base62 id -> 16-byte gid.
+pub fn id_to_gid(id: &str) -> Option<[u8; 16]> {
+    Some(librespot_core::SpotifyId::from_base62(id).ok()?.to_raw())
+}
+
+/// `spotify:<kind>:<id>` -> `(kind, id)`.
+pub fn split_uri(uri: &str) -> Option<(&str, &str)> {
+    let mut it = uri.split(':');
+    match (it.next(), it.next(), it.next(), it.next()) {
+        (Some("spotify"), Some(kind), Some(id), None) if !id.is_empty() => Some((kind, id)),
+        // Legacy `spotify:user:<name>:playlist:<id>`.
+        (Some("spotify"), Some("user"), Some(_), Some("playlist")) => {
+            uri.rsplit(':').next().map(|id| ("playlist", id))
         }
+        _ => None,
     }
 }
 
-fn images(v: Option<Vec<Image>>) -> Vec<model::Image> {
-    v.unwrap_or_default().into_iter().map(Into::into).collect()
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Parse list entries one by one so a single malformed or unknown entry
-/// (Spotify adds item types over time) drops that entry, not the page.
-fn lenient_items<'de, D, T>(d: D) -> Result<Vec<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    let raw: Option<Vec<serde_json::Value>> = Option::deserialize(d)?;
-    Ok(raw
-        .unwrap_or_default()
-        .into_iter()
-        .map(|v| serde_json::from_value(v).ok())
-        .collect())
+pub fn image_url(file_id: &[u8]) -> String {
+    format!("{IMAGE_CDN}{}", hex(file_id))
 }
 
-/// `null` → `T::default()` (local files have `"id": null`).
-fn null_default<'de, D, T>(d: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Default + Deserialize<'de>,
-{
-    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Paging<T> {
-    #[serde(default = "Vec::new", deserialize_with = "lenient_items")]
-    #[serde(bound(deserialize = "T: serde::de::DeserializeOwned"))]
-    pub items: Vec<Option<T>>,
-    #[serde(default)]
-    pub offset: u32,
-    #[serde(default)]
-    pub total: u32,
-    #[serde(default)]
-    pub next: Option<String>,
-}
-
-impl<T> Paging<T> {
-    pub fn into_page<U>(self, f: impl FnMut(T) -> Option<U>) -> model::Page<U> {
-        let raw_len = self.items.len();
-        let mut items: Vec<U> = self.items.into_iter().flatten().filter_map(f).collect();
-        items.shrink_to_fit();
-        // `total`/`offset` describe raw entries; keep paging on raw length.
-        model::Page {
-            items,
-            offset: self.offset,
-            total: self.total.max(
-                self.offset
-                    .saturating_add(u32::try_from(raw_len).unwrap_or(u32::MAX)),
-            ),
-            raw_len: u32::try_from(raw_len).unwrap_or(u32::MAX),
-        }
+fn size_px(size: metadata::image::Size) -> u32 {
+    use metadata::image::Size;
+    match size {
+        Size::SMALL => 64,
+        Size::DEFAULT => 300,
+        Size::LARGE => 640,
+        Size::XLARGE => 1280,
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct Cursors {
-    #[serde(default)]
-    pub after: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct CursorPaging<T> {
-    #[serde(default = "Vec::new", deserialize_with = "lenient_items")]
-    #[serde(bound(deserialize = "T: serde::de::DeserializeOwned"))]
-    pub items: Vec<Option<T>>,
-    #[serde(default)]
-    pub next: Option<String>,
-    #[serde(default)]
-    pub cursors: Option<Cursors>,
-    #[serde(default)]
-    pub total: Option<u32>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SimpleArtist {
-    #[serde(default)]
-    pub id: Option<String>,
-    pub name: String,
-}
-
-impl From<SimpleArtist> for model::ArtistRef {
-    fn from(a: SimpleArtist) -> Self {
-        Self {
-            id: a.id.unwrap_or_default(),
-            name: a.name,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Followers {
-    #[serde(default)]
-    pub total: Option<u64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct FullArtist {
-    pub id: String,
-    #[serde(default)]
-    pub uri: String,
-    pub name: String,
-    #[serde(default)]
-    pub images: Option<Vec<Image>>,
-    #[serde(default)]
-    pub followers: Option<Followers>,
-    #[serde(default)]
-    pub genres: Vec<String>,
-}
-
-impl From<FullArtist> for model::Artist {
-    fn from(a: FullArtist) -> Self {
-        Self {
-            uri: if a.uri.is_empty() {
-                format!("spotify:artist:{}", a.id)
-            } else {
-                a.uri
-            },
-            id: a.id,
-            name: a.name,
-            images: images(a.images),
-            followers: a.followers.and_then(|f| f.total),
-            genres: a.genres,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Album {
-    #[serde(default, deserialize_with = "null_default")]
-    pub id: String,
-    #[serde(default)]
-    pub uri: String,
-    pub name: String,
-    #[serde(default)]
-    pub album_type: Option<String>,
-    #[serde(default)]
-    pub artists: Vec<SimpleArtist>,
-    #[serde(default)]
-    pub images: Option<Vec<Image>>,
-    #[serde(default)]
-    pub release_date: Option<String>,
-    #[serde(default)]
-    pub total_tracks: Option<u32>,
-    /// Present on the full album object only.
-    #[serde(default)]
-    pub tracks: Option<Paging<Track>>,
-}
-
-fn album_kind(s: Option<&str>) -> model::AlbumKind {
-    match s {
-        Some("single") => model::AlbumKind::Single,
-        Some("compilation") => model::AlbumKind::Compilation,
-        _ => model::AlbumKind::Album,
-    }
-}
-
-impl Album {
-    /// Convert, returning the album and the first page of its tracks.
-    pub fn into_model(self) -> (model::Album, Option<model::Page<model::Track>>) {
-        let album_ref = model::AlbumRef {
-            id: self.id.clone(),
-            name: self.name.clone(),
-            images: images(self.images.clone()),
-        };
-        let page = self.tracks.map(|p| {
-            p.into_page(|t| {
-                let mut t = t.into_model()?;
-                // Album track objects are "simplified" and lack the album.
-                if t.album.is_none() {
-                    t.album = Some(album_ref.clone());
-                }
-                Some(t)
-            })
-        });
-        let album = model::Album {
-            uri: if self.uri.is_empty() {
-                format!("spotify:album:{}", self.id)
-            } else {
-                self.uri
-            },
-            kind: album_kind(self.album_type.as_deref()),
-            id: self.id,
-            name: self.name,
-            artists: self.artists.into_iter().map(Into::into).collect(),
-            images: album_ref.images,
-            release_date: self.release_date.unwrap_or_default(),
-            total_tracks: self.total_tracks.unwrap_or(0),
-            tracks: Vec::new(),
-        };
-        (album, page)
-    }
-}
-
-impl From<Album> for model::Album {
-    fn from(a: Album) -> Self {
-        let (mut album, page) = a.into_model();
-        if let Some(p) = page {
-            album.tracks = p.items;
-        }
-        album
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Track {
-    #[serde(default)]
-    pub id: Option<String>,
-    #[serde(default)]
-    pub uri: Option<String>,
-    pub name: String,
-    /// "track" or "episode" (playlists can contain podcast episodes).
-    #[serde(rename = "type", default)]
-    pub kind: Option<String>,
-    #[serde(default)]
-    pub artists: Vec<SimpleArtist>,
-    #[serde(default)]
-    pub album: Option<Album>,
-    #[serde(default)]
-    pub duration_ms: u32,
-    #[serde(default)]
-    pub explicit: bool,
-    #[serde(default)]
-    pub is_playable: Option<bool>,
-    #[serde(default)]
-    pub is_local: bool,
-}
-
-impl Track {
-    /// `None` for episodes and other non-track entries.
-    pub fn into_model(self) -> Option<model::Track> {
-        if self.kind.as_deref().is_some_and(|k| k != "track") {
-            return None;
-        }
-        let id = self.id.unwrap_or_default();
-        let uri = self.uri.unwrap_or_else(|| format!("spotify:track:{id}"));
-        let playable = !self.is_local && !id.is_empty() && self.is_playable.unwrap_or(true);
-        Some(model::Track {
-            id,
-            uri,
-            name: self.name,
-            artists: self.artists.into_iter().map(Into::into).collect(),
-            album: self.album.map(|a| model::AlbumRef {
-                id: a.id,
-                name: a.name,
-                images: images(a.images),
-            }),
-            duration_ms: self.duration_ms,
-            explicit: self.explicit,
-            playable,
-            added_at: None,
+pub fn images(list: &[metadata::Image]) -> Vec<Image> {
+    list.iter()
+        .filter(|i| !i.file_id().is_empty())
+        .map(|i| {
+            let w = u32::try_from(i.width())
+                .ok()
+                .filter(|w| *w > 0)
+                .unwrap_or_else(|| size_px(i.size()));
+            Image {
+                url: image_url(i.file_id()),
+                width: Some(w),
+                height: Some(w),
+            }
         })
+        .collect()
+}
+
+fn group_images(group: Option<&metadata::ImageGroup>, plain: &[metadata::Image]) -> Vec<Image> {
+    let mut v = group.map(|g| images(&g.image)).unwrap_or_default();
+    if v.is_empty() {
+        v = images(plain);
+    }
+    v
+}
+
+fn artist_refs(list: &[metadata::Artist]) -> Vec<ArtistRef> {
+    list.iter()
+        .filter_map(|a| {
+            Some(ArtistRef {
+                id: gid_to_id(a.gid())?,
+                name: a.name().to_owned(),
+            })
+        })
+        .collect()
+}
+
+pub fn album_kind(t: metadata::album::Type) -> AlbumKind {
+    use metadata::album::Type;
+    match t {
+        Type::SINGLE | Type::EP => AlbumKind::Single,
+        Type::COMPILATION => AlbumKind::Compilation,
+        _ => AlbumKind::Album,
     }
 }
 
-/// Entry of a playlist's track list or of the user's saved tracks.
-/// Newer API revisions call the field `item`; both are accepted.
-#[derive(Debug, Clone, Deserialize)]
-pub struct SavedTrack {
-    #[serde(default)]
-    pub added_at: Option<String>,
-    #[serde(default, alias = "item")]
-    pub track: Option<Track>,
-}
-
-impl SavedTrack {
-    pub fn into_model(self) -> Option<model::Track> {
-        let mut t = self.track?.into_model()?;
-        t.added_at = self.added_at;
-        Some(t)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SavedAlbum {
-    pub album: Album,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct PlayHistory {
-    pub track: Track,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Owner {
-    #[serde(default)]
-    pub id: Option<String>,
-    #[serde(default)]
-    pub display_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TracksRef {
-    #[serde(default)]
-    pub total: u32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Playlist {
-    pub id: String,
-    #[serde(default)]
-    pub uri: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub owner: Option<Owner>,
-    #[serde(default)]
-    pub images: Option<Vec<Image>>,
-    /// Simplified playlists only carry `{href,total}`; full ones a page.
-    /// Newer API revisions call the field `items`.
-    #[serde(default, alias = "items")]
-    pub tracks: Option<serde_json::Value>,
-}
-
-impl Playlist {
-    pub fn into_model(self) -> (model::Playlist, Option<model::Page<model::Track>>) {
-        let mut total = 0;
-        let mut page = None;
-        if let Some(v) = self.tracks {
-            if v.get("items").is_some() {
-                if let Ok(p) = serde_json::from_value::<Paging<SavedTrack>>(v) {
-                    total = p.total;
-                    page = Some(p.into_page(SavedTrack::into_model));
-                }
-            } else if let Ok(t) = serde_json::from_value::<TracksRef>(v) {
-                total = t.total;
+fn date_string(d: Option<&metadata::Date>) -> String {
+    match d {
+        Some(d) if d.year() > 0 => {
+            if d.month() > 0 && d.day() > 0 {
+                format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day())
+            } else {
+                format!("{:04}", d.year())
             }
         }
-        let owner = self
-            .owner
-            .map(|o| o.display_name.or(o.id).unwrap_or_default())
-            .unwrap_or_default();
-        let pl = model::Playlist {
-            uri: if self.uri.is_empty() {
-                format!("spotify:playlist:{}", self.id)
-            } else {
-                self.uri
-            },
-            id: self.id,
-            name: self.name,
-            description: strip_html(&self.description.unwrap_or_default()),
-            owner,
-            images: images(self.images),
-            total_tracks: total,
-        };
-        (pl, page)
+        _ => String::new(),
     }
 }
 
-impl From<Playlist> for model::Playlist {
-    fn from(p: Playlist) -> Self {
-        p.into_model().0
+pub fn track(t: &metadata::Track) -> Option<Track> {
+    let id = gid_to_id(t.gid())?;
+    let album = t.album.as_ref().and_then(|a| {
+        Some(AlbumRef {
+            id: gid_to_id(a.gid())?,
+            name: a.name().to_owned(),
+            images: group_images(a.cover_group.as_ref(), &a.cover),
+        })
+    });
+    let mut artists = artist_refs(&t.artist);
+    if artists.is_empty() {
+        artists = t
+            .artist_with_role
+            .iter()
+            .filter_map(|a| {
+                Some(ArtistRef {
+                    id: gid_to_id(a.artist_gid())?,
+                    name: a.artist_name().to_owned(),
+                })
+            })
+            .collect();
+    }
+    Some(Track {
+        uri: format!("spotify:track:{id}"),
+        id,
+        name: t.name().to_owned(),
+        artists,
+        album,
+        duration_ms: u32::try_from(t.duration()).unwrap_or(0),
+        explicit: t.explicit(),
+        // Availability is decided by librespot at load time (it also picks
+        // alternatives for restricted files); an unplayable track then
+        // reports `Unavailable` and the queue skips it.
+        playable: true,
+        added_at: None,
+    })
+}
+
+/// Album without its tracks, plus the track gids from its discs (in order).
+pub fn album(a: &metadata::Album) -> Option<(Album, Vec<String>)> {
+    let id = gid_to_id(a.gid())?;
+    let track_ids: Vec<String> = a
+        .disc
+        .iter()
+        .flat_map(|d| d.track.iter())
+        .filter_map(|t| gid_to_id(t.gid()))
+        .collect();
+    Some((
+        Album {
+            uri: format!("spotify:album:{id}"),
+            id,
+            name: a.name().to_owned(),
+            artists: artist_refs(&a.artist),
+            images: group_images(a.cover_group.as_ref(), &a.cover),
+            release_date: date_string(a.date.as_ref()),
+            kind: album_kind(a.type_()),
+            total_tracks: u32::try_from(track_ids.len()).unwrap_or(0),
+            tracks: Vec::new(),
+        },
+        track_ids,
+    ))
+}
+
+pub fn artist(a: &metadata::Artist) -> Option<Artist> {
+    let id = gid_to_id(a.gid())?;
+    Some(Artist {
+        uri: format!("spotify:artist:{id}"),
+        id,
+        name: a.name().to_owned(),
+        images: group_images(a.portrait_group.as_ref(), &a.portrait),
+        followers: None,
+        genres: Vec::new(),
+    })
+}
+
+/// Top track ids for `country` (falls back to the first list).
+pub fn artist_top_track_ids(a: &metadata::Artist, country: &str) -> Vec<String> {
+    let list = a
+        .top_track
+        .iter()
+        .find(|t| t.country() == country)
+        .or_else(|| a.top_track.first());
+    list.map(|l| l.track.iter().filter_map(|t| gid_to_id(t.gid())).collect())
+        .unwrap_or_default()
+}
+
+/// Album + single ids of an artist (first album of each group), newest
+/// groups first as Spotify returns them.
+pub fn artist_release_ids(a: &metadata::Artist, cap: usize) -> Vec<String> {
+    a.album_group
+        .iter()
+        .chain(a.single_group.iter())
+        .filter_map(|g| g.album.first())
+        .filter_map(|al| gid_to_id(al.gid()))
+        .take(cap)
+        .collect()
+}
+
+/// Playlist header from a `SelectedListContent`.
+pub fn playlist(id: &str, c: &SelectedListContent) -> Playlist {
+    let attrs = c.attributes.as_ref();
+    let picture = attrs.map(|a| a.picture()).filter(|p| !p.is_empty());
+    Playlist {
+        id: id.to_owned(),
+        uri: format!("spotify:playlist:{id}"),
+        name: attrs.map(|a| a.name().to_owned()).unwrap_or_default(),
+        description: attrs
+            .map(|a| a.description().to_owned())
+            .unwrap_or_default(),
+        owner: c.owner_username().to_owned(),
+        images: picture
+            .map(|p| {
+                vec![Image {
+                    url: image_url(p),
+                    width: Some(300),
+                    height: Some(300),
+                }]
+            })
+            .unwrap_or_default(),
+        total_tracks: u32::try_from(c.length()).unwrap_or(0),
     }
 }
 
-/// Playlist descriptions may contain `<a href>` tags and HTML entities.
-pub fn strip_html(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_tag = false;
-    for c in s.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            c if !in_tag => out.push(c),
-            _ => {}
-        }
+/// Entries of a playlist page: `(uri, added_at ISO date)`.
+pub fn playlist_items(c: &SelectedListContent) -> Vec<(String, Option<String>)> {
+    c.contents
+        .as_ref()
+        .map(|l| {
+            l.items
+                .iter()
+                .map(|it| {
+                    let ts = it.attributes.as_ref().map(|a| a.timestamp()).unwrap_or(0);
+                    (it.uri().to_owned(), iso_date_from_ms(ts))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Playlists of the user's rootlist (folders are flattened away).
+pub fn rootlist(c: &SelectedListContent) -> Vec<Playlist> {
+    let Some(contents) = c.contents.as_ref() else {
+        return Vec::new();
+    };
+    contents
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, it)| {
+            let (kind, id) = split_uri(it.uri())?;
+            if kind != "playlist" {
+                return None; // spotify:start-group / end-group (folders)
+            }
+            let meta = contents.meta_items.get(i);
+            let attrs = meta.and_then(|m| m.attributes.as_ref());
+            let picture = attrs.map(|a| a.picture()).filter(|p| !p.is_empty());
+            Some(Playlist {
+                id: id.to_owned(),
+                uri: format!("spotify:playlist:{id}"),
+                name: attrs.map(|a| a.name().to_owned()).unwrap_or_default(),
+                description: attrs
+                    .map(|a| a.description().to_owned())
+                    .unwrap_or_default(),
+                owner: meta
+                    .map(|m| m.owner_username().to_owned())
+                    .unwrap_or_default(),
+                images: picture
+                    .map(|p| {
+                        vec![Image {
+                            url: image_url(p),
+                            width: Some(300),
+                            height: Some(300),
+                        }]
+                    })
+                    .unwrap_or_default(),
+                total_tracks: meta
+                    .and_then(|m| u32::try_from(m.length()).ok())
+                    .unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
+/// Milliseconds since the epoch -> `YYYY-MM-DD` (civil date, UTC).
+pub fn iso_date_from_ms(ms: i64) -> Option<String> {
+    iso_date_from_secs(ms / 1000)
+}
+
+pub fn iso_date_from_secs(secs: i64) -> Option<String> {
+    if secs <= 0 {
+        return None;
     }
-    out.replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&#39;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
+    // Howard Hinnant's days-from-civil inverse.
+    let z = secs.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    Some(format!("{y:04}-{m:02}-{d:02}"))
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct UserProfile {
-    pub id: String,
-    #[serde(default)]
-    pub display_name: Option<String>,
-    #[serde(default)]
-    pub images: Option<Vec<Image>>,
-    #[serde(default)]
-    pub product: Option<String>,
+// --------------------------------------------------------------- JSON side
+
+fn s(v: &Value, ptr: &str) -> Option<String> {
+    v.pointer(ptr)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
-impl From<UserProfile> for model::User {
-    fn from(u: UserProfile) -> Self {
-        let image = model::pick_image(&images(u.images), 64).map(|i| i.url.clone());
-        Self {
-            display_name: u.display_name.unwrap_or_else(|| u.id.clone()),
-            id: u.id,
-            image,
-            product: u.product,
-        }
-    }
+fn id_of(uri: &str, kind: &str) -> Option<String> {
+    let (k, id) = split_uri(uri)?;
+    (k == kind).then(|| id.to_owned())
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct SearchResponse {
-    #[serde(default)]
-    pub tracks: Option<Paging<Track>>,
-    #[serde(default)]
-    pub artists: Option<Paging<FullArtist>>,
-    #[serde(default)]
-    pub albums: Option<Paging<Album>>,
-    #[serde(default)]
-    pub playlists: Option<Paging<Playlist>>,
+/// GraphQL `sources: [{url, width, height}]`.
+fn sources(v: Option<&Value>) -> Vec<Image> {
+    v.and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|src| {
+                    Some(Image {
+                        url: src.get("url")?.as_str()?.to_owned(),
+                        width: src.get("width").and_then(Value::as_u64).map(|w| w as u32),
+                        height: src.get("height").and_then(Value::as_u64).map(|h| h as u32),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-impl SearchResponse {
-    pub fn into_model(self, query: &str) -> model::SearchResults {
-        model::SearchResults {
-            query: query.to_owned(),
-            tracks: self
-                .tracks
-                .map(|p| p.into_page(Track::into_model).items)
-                .unwrap_or_default(),
-            artists: self
-                .artists
-                .map(|p| p.into_page(|a| Some(a.into())).items)
-                .unwrap_or_default(),
-            albums: self
-                .albums
-                .map(|p| p.into_page(|a| Some(a.into())).items)
-                .unwrap_or_default(),
-            playlists: self
-                .playlists
-                .map(|p| p.into_page(|p| Some(p.into())).items)
-                .unwrap_or_default(),
-        }
-    }
+fn gql_artists(v: Option<&Value>) -> Vec<ArtistRef> {
+    v.and_then(|a| a.get("items"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|a| {
+                    Some(ArtistRef {
+                        id: id_of(a.get("uri")?.as_str()?, "artist")?,
+                        name: s(a, "/profile/name").unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct FollowedArtists {
-    pub artists: CursorPaging<FullArtist>,
+/// A pathfinder `Track` object (searchV2 `tracksV2.items[].item.data`).
+pub fn gql_track(d: &Value) -> Option<Track> {
+    let uri = s(d, "/uri")?;
+    let id = id_of(&uri, "track")?;
+    let album = d.get("albumOfTrack").and_then(|a| {
+        Some(AlbumRef {
+            id: id_of(a.get("uri")?.as_str()?, "album")?,
+            name: s(a, "/name").unwrap_or_default(),
+            images: sources(a.pointer("/coverArt/sources")),
+        })
+    });
+    Some(Track {
+        id,
+        uri,
+        name: s(d, "/name").unwrap_or_default(),
+        artists: gql_artists(d.get("artists")),
+        album,
+        duration_ms: d
+            .pointer("/duration/totalMilliseconds")
+            .and_then(Value::as_u64)
+            .map_or(0, |v| v as u32),
+        explicit: s(d, "/contentRating/label").as_deref() == Some("EXPLICIT"),
+        playable: d
+            .pointer("/playability/playable")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        added_at: None,
+    })
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct TopTracks {
-    pub tracks: Vec<Track>,
+pub fn gql_album(d: &Value) -> Option<Album> {
+    let uri = s(d, "/uri")?;
+    let id = id_of(&uri, "album")?;
+    let kind = match s(d, "/type").as_deref() {
+        Some("SINGLE" | "EP") => AlbumKind::Single,
+        Some("COMPILATION") => AlbumKind::Compilation,
+        _ => AlbumKind::Album,
+    };
+    Some(Album {
+        id,
+        uri,
+        name: s(d, "/name").unwrap_or_default(),
+        artists: gql_artists(d.get("artists")),
+        images: sources(d.pointer("/coverArt/sources")),
+        release_date: d
+            .pointer("/date/year")
+            .and_then(Value::as_u64)
+            .map(|y| y.to_string())
+            .unwrap_or_default(),
+        kind,
+        total_tracks: 0,
+        tracks: Vec::new(),
+    })
 }
 
-/// `{"error": {"status": 401, "message": "..."}}`
-#[derive(Debug, Clone, Deserialize)]
-pub struct ApiErrorBody {
-    pub error: ApiError,
+pub fn gql_artist(d: &Value) -> Option<Artist> {
+    let uri = s(d, "/uri")?;
+    let id = id_of(&uri, "artist")?;
+    Some(Artist {
+        id,
+        uri,
+        name: s(d, "/profile/name").unwrap_or_default(),
+        images: sources(d.pointer("/visuals/avatarImage/sources")),
+        followers: None,
+        genres: Vec::new(),
+    })
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct ApiError {
-    #[serde(default)]
-    pub status: u16,
-    #[serde(default)]
-    pub message: String,
+pub fn gql_playlist(d: &Value) -> Option<Playlist> {
+    let uri = s(d, "/uri")?;
+    let id = id_of(&uri, "playlist")?;
+    Some(Playlist {
+        id,
+        uri,
+        name: s(d, "/name").unwrap_or_default(),
+        description: s(d, "/description").unwrap_or_default(),
+        owner: s(d, "/ownerV2/data/name").unwrap_or_default(),
+        images: sources(d.pointer("/images/items/0/sources")),
+        total_tracks: 0,
+    })
+}
+
+/// `color-lyrics/v2` JSON.
+pub fn lyrics(v: &Value) -> Option<Lyrics> {
+    let l = v.get("lyrics")?;
+    let lines = l
+        .get("lines")?
+        .as_array()?
+        .iter()
+        .filter_map(|line| {
+            let text = line.get("words")?.as_str()?.to_owned();
+            let start_ms = line
+                .get("startTimeMs")
+                .and_then(|t| t.as_str().and_then(|s| s.parse().ok()).or(t.as_u64()))
+                .map_or(0, |t| t as u32);
+            Some(LyricLine { start_ms, text })
+        })
+        .collect::<Vec<_>>();
+    Some(Lyrics {
+        synced: l.get("syncType").and_then(Value::as_str) == Some("LINE_SYNCED"),
+        lines,
+        provider: s(l, "/providerDisplayName"),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const GID: [u8; 16] = [
+        0x4c, 0xb6, 0x4f, 0x1a, 0x7d, 0x1f, 0x4b, 0x4f, 0x9a, 0x6f, 0x63, 0x94, 0x39, 0x7b, 0x53,
+        0x01,
+    ];
+
     #[test]
-    fn strip_html_handles_links_and_entities() {
+    fn gid_roundtrip_and_uris() {
+        let id = gid_to_id(&GID).unwrap();
+        assert_eq!(id.len(), 22);
+        assert_eq!(id_to_gid(&id).unwrap(), GID);
+        assert!(gid_to_id(&[1, 2]).is_none());
+        assert_eq!(split_uri("spotify:track:abc"), Some(("track", "abc")));
         assert_eq!(
-            strip_html(r#"Best of <a href="spotify:x">Rock</a> &amp; Roll"#),
-            "Best of Rock & Roll"
+            split_uri("spotify:user:bob:playlist:xyz"),
+            Some(("playlist", "xyz"))
+        );
+        assert_eq!(split_uri("spotify:start-group:1:Folder"), None);
+        assert_eq!(split_uri("https://x"), None);
+    }
+
+    #[test]
+    fn dates() {
+        assert_eq!(iso_date_from_secs(0), None);
+        assert_eq!(
+            iso_date_from_secs(951_782_400).as_deref(),
+            Some("2000-02-29")
+        );
+        assert_eq!(
+            iso_date_from_ms(1_700_000_000_000).as_deref(),
+            Some("2023-11-14")
         );
     }
 
     #[test]
-    fn episodes_and_local_files() {
-        let ep: Track = serde_json::from_str(r#"{"name":"Ep","type":"episode"}"#).unwrap();
-        assert!(ep.into_model().is_none());
-        let local: Track = serde_json::from_str(
-            r#"{"name":"Local","type":"track","is_local":true,"uri":"spotify:local:x"}"#,
-        )
-        .unwrap();
-        let t = local.into_model().unwrap();
-        assert!(!t.playable);
+    fn track_from_protobuf() {
+        let mut t = metadata::Track::new();
+        t.set_gid(GID.to_vec());
+        t.set_name("Song".into());
+        t.set_duration(201_000);
+        t.set_explicit(true);
+        let mut ar = metadata::Artist::new();
+        ar.set_gid(GID.to_vec());
+        ar.set_name("Band".into());
+        t.artist.push(ar);
+        let mut al = metadata::Album::new();
+        al.set_gid(GID.to_vec());
+        al.set_name("Record".into());
+        let mut img = metadata::Image::new();
+        img.set_file_id(vec![0xab, 0xcd]);
+        img.set_size(metadata::image::Size::LARGE);
+        al.cover.push(img);
+        t.album = Some(al).into();
+        let m = track(&t).unwrap();
+        assert_eq!(m.uri, format!("spotify:track:{}", m.id));
+        assert_eq!(m.name, "Song");
+        assert_eq!(m.duration_ms, 201_000);
+        assert!(m.explicit && m.playable);
+        assert_eq!(m.artist_line(), "Band");
+        let img = &m.album.unwrap().images[0];
+        assert_eq!(img.url, "https://i.scdn.co/image/abcd");
+        assert_eq!(img.width, Some(640));
+        assert!(track(&metadata::Track::new()).is_none(), "no gid");
+    }
+
+    #[test]
+    fn graphql_track_is_lenient() {
+        let v: Value = serde_json::json!({
+            "uri": "spotify:track:t1",
+            "name": "N",
+            "duration": {"totalMilliseconds": 1000},
+            "artists": {"items": [{"uri": "spotify:artist:a1", "profile": {"name": "A"}}, {"bogus": 1}]},
+            "albumOfTrack": {"uri": "spotify:album:b1", "name": "B", "coverArt": {"sources": [{"url": "u", "width": 64}]}},
+            "contentRating": {"label": "EXPLICIT"}
+        });
+        let t = gql_track(&v).unwrap();
+        assert_eq!(t.id, "t1");
+        assert_eq!(t.artists.len(), 1);
+        assert!(t.explicit);
+        assert_eq!(t.images()[0].width, Some(64));
+        assert!(gql_track(&serde_json::json!({"uri": "spotify:episode:e"})).is_none());
+    }
+
+    #[test]
+    fn lyrics_parse() {
+        let v: Value = serde_json::json!({"lyrics": {"syncType": "LINE_SYNCED",
+            "lines": [{"startTimeMs": "1500", "words": "Hello"}, {"startTimeMs": "3000", "words": "World"}],
+            "providerDisplayName": "Provider"}});
+        let l = lyrics(&v).unwrap();
+        assert!(l.synced);
+        assert_eq!(l.lines[1].start_ms, 3000);
+        assert_eq!(l.provider.as_deref(), Some("Provider"));
     }
 }

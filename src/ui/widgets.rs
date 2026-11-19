@@ -39,6 +39,9 @@ pub fn icon_button<'a>(i: Icon, size: f32, msg: Option<Message>, active: bool) -
     };
     let content: El<'a> = if msg.is_some() {
         hover_icon(i, size, normal, hover)
+    } else if active {
+        // Status indicator (e.g. Spotify Connect active): lit, not clickable.
+        icon(i, size, p.accent)
     } else {
         icon(i, size, p.text_muted)
     };
@@ -175,13 +178,19 @@ pub fn section<'a>(title: &'a str, body: El<'a>) -> El<'a> {
         .into()
 }
 
-/// Up to `n` items in a non-wrapping row.
+/// One row of cards: cards that do not fit wrap onto a second line that
+/// is clipped away, so a narrow panel shows fewer (whole) cards instead of
+/// squeezing them on top of each other.
 pub fn card_row<'a>(cards: Vec<El<'a>>) -> El<'a> {
     let mut r = row![].spacing(0);
     for c in cards {
         r = r.push(c);
     }
-    container(r).width(Length::Fill).clip(true).into()
+    container(r.wrap())
+        .width(Length::Fill)
+        .height(M.art_card + 80.0)
+        .clip(true)
+        .into()
 }
 
 pub fn wrap_grid<'a>(cards: Vec<El<'a>>) -> El<'a> {
@@ -372,8 +381,8 @@ fn track_row<'a>(
     let key = format!("{prefix}#{i}");
     let hovered = app.hovered_row.as_deref() == Some(key.as_str());
     let selected = app.selected_row.as_deref() == Some(key.as_str());
-    let current = app.queue.current.as_ref().is_some_and(|c| c.uri == t.uri);
-    let playing = current && app.playback.is_playing();
+    let current = app.now_track().is_some_and(|c| c.uri == t.uri);
+    let playing = current && app.now_playback().is_playing();
     let liked = app.liked_ids.contains(&t.id);
     let title_color = if current {
         p.accent
