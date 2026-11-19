@@ -6,6 +6,7 @@ use iced::{Alignment, Length, Padding};
 use super::icons::Icon;
 use super::theme::{self, FONT, M, pal};
 use super::widgets::{El, art, bold, clipped, fill, hover_icon, icon, label, liked_art, secondary};
+use crate::app::menu::MenuTarget;
 use crate::app::state::{LibraryFilter, Route};
 use crate::app::{App, Ui, ui};
 use crate::net::model::Image;
@@ -34,6 +35,7 @@ fn item<'a>(
     title: &'a str,
     subtitle: String,
     route: Route,
+    target: Option<MenuTarget>,
 ) -> El<'a> {
     let selected = *app.route() == route;
     let playing_here = app
@@ -60,12 +62,16 @@ fn item<'a>(
     if playing_here && app.playback.is_playing() {
         r = r.push(icon(Icon::Volume, 16.0, pal().accent));
     }
-    button(r)
+    let b: El<'a> = button(r)
         .padding(8)
         .width(Length::Fill)
         .style(theme::list_row(selected))
         .on_press(ui(Ui::Navigate(route)))
-        .into()
+        .into();
+    match target {
+        Some(t) => super::menu::right_click(b, t),
+        None => b,
+    }
 }
 
 fn sidebar_art<'a>(app: &App, images: &[Image], round: bool, fallback: Icon) -> El<'a> {
@@ -100,7 +106,7 @@ pub fn view(app: &App) -> El<'_> {
         ))
         .padding(8)
         .style(theme::round_dark)
-        .on_press(ui(Ui::Navigate(Route::Search))),
+        .on_press(ui(Ui::NewPlaylist)),
     ]
     .align_y(Alignment::Center);
 
@@ -132,6 +138,7 @@ pub fn view(app: &App) -> El<'_> {
             "Liked Songs",
             format!("Playlist • {} songs", lib.liked_total),
             Route::Liked,
+            None,
         ));
         for p in &lib.playlists {
             list = list.push(item(
@@ -140,6 +147,7 @@ pub fn view(app: &App) -> El<'_> {
                 &p.name,
                 format!("Playlist • {}", p.owner),
                 Route::Playlist(p.id.clone()),
+                Some(app.playlist_target(p)),
             ));
         }
     }
@@ -151,6 +159,7 @@ pub fn view(app: &App) -> El<'_> {
                 &a.name,
                 format!("Album • {}", a.artist_line()),
                 Route::Album(a.id.clone()),
+                Some(MenuTarget::album(a)),
             ));
         }
     }
@@ -162,6 +171,7 @@ pub fn view(app: &App) -> El<'_> {
                 &a.name,
                 "Artist".into(),
                 Route::Artist(a.id.clone()),
+                Some(MenuTarget::artist(a)),
             ));
         }
     }

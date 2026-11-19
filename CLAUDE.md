@@ -49,3 +49,8 @@ No packaging yet. Release binary from `cargo build --release`;
 - Paging uses raw entry counts (`Page::raw_len`), since episodes/null items
   are dropped during conversion.
 - librespot rodio backend needs ALSA dev libs on Linux.
+- Right-click needs `ui/context_area.rs` (`mouse_area` has no window position).
+  `update_ui` closes the context menu on every `Ui` except the exempt list at
+  its top: add new passive events (hover, scroll, resize) there.
+- Playlist edits are optimistic: keep the `EditSnapshot` rollback path (tested
+  in `app/playlists.rs`) when adding new edit kinds.

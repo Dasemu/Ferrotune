@@ -9,6 +9,7 @@ use super::widgets::{
     El, TableOpts, art, bold, card, card_row, error_box, label, loading, secondary, section,
     track_table, vspace, wrap_grid,
 };
+use crate::app::menu::MenuTarget;
 use crate::app::state::{Route, SearchFilter};
 use crate::app::{App, TrackSource, Ui, ui};
 
@@ -136,6 +137,7 @@ pub fn view(app: &App) -> El<'_> {
                                 true,
                                 Icon::User,
                                 ui(Ui::Navigate(Route::Artist(a.id.clone()))),
+                                Some(MenuTarget::artist(a)),
                             )
                         })
                         .collect()
@@ -152,6 +154,7 @@ pub fn view(app: &App) -> El<'_> {
                                 false,
                                 Icon::Disc,
                                 ui(Ui::Navigate(Route::Album(a.id.clone()))),
+                                Some(MenuTarget::album(a)),
                             )
                         })
                         .collect()
@@ -168,6 +171,7 @@ pub fn view(app: &App) -> El<'_> {
                                 false,
                                 Icon::Music,
                                 ui(Ui::Navigate(Route::Playlist(p.id.clone()))),
+                                Some(app.playlist_target(p)),
                             )
                         })
                         .collect()
@@ -188,6 +192,7 @@ pub fn view(app: &App) -> El<'_> {
                                 &a.name,
                                 "Artist".into(),
                                 ui(Ui::Navigate(Route::Artist(a.id.clone()))),
+                                Some(MenuTarget::artist(a)),
                             ))
                         } else {
                             r.tracks.first().map(|t| {
@@ -197,6 +202,7 @@ pub fn view(app: &App) -> El<'_> {
                                     &t.name,
                                     format!("Song • {}", t.artist_line()),
                                     ui(Ui::PlayFrom(TrackSource::Search, Some(0))),
+                                    Some(MenuTarget::track(t, None)),
                                 )
                             })
                         };
@@ -260,8 +266,9 @@ fn top_result<'a>(
     title: &'a str,
     subtitle: String,
     msg: crate::app::Message,
+    target: Option<MenuTarget>,
 ) -> El<'a> {
-    button(
+    let b: El<'a> = button(
         column![
             art_el,
             vspace(12.0),
@@ -290,5 +297,9 @@ fn top_result<'a>(
         ..Default::default()
     })
     .on_press(msg)
-    .into()
+    .into();
+    match target {
+        Some(t) => super::menu::right_click(b, t),
+        None => b,
+    }
 }
