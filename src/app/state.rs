@@ -180,6 +180,8 @@ pub struct Queue {
     pos: usize,
     pub user_queue: VecDeque<Track>,
     pub current: Option<Track>,
+    /// `current` came from `user_queue`, not from the context at `pos`.
+    current_is_queued: bool,
     pub shuffle: bool,
     pub repeat: Repeat,
     rng: StdRng,
@@ -200,6 +202,7 @@ impl Queue {
             pos: 0,
             user_queue: VecDeque::new(),
             current: None,
+            current_is_queued: false,
             shuffle: false,
             repeat: Repeat::Off,
             rng: StdRng::seed_from_u64(seed),
@@ -218,7 +221,8 @@ impl Queue {
         tracks: Vec<Track>,
         start: Option<usize>,
     ) -> Option<Track> {
-        if tracks.is_empty() {
+        // Keep the existing queue when there is nothing to play.
+        if !tracks.iter().any(|t| t.playable) {
             return None;
         }
         let start = match start {
@@ -233,11 +237,15 @@ impl Queue {
         self.context = Some(context);
         self.tracks = tracks;
         self.rebuild_order(start);
-        let mut first = self.tracks[self.order[self.pos]].clone();
-        if !first.playable {
-            first = self.step_context(true)?;
-        }
+        // First playable track at or after the start (wrapping, no reshuffle).
+        let n = self.order.len();
+        let p = (0..n)
+            .map(|k| (self.pos + k) % n)
+            .find(|&p| self.tracks[self.order[p]].playable)?;
+        self.pos = p;
+        let first = self.tracks[self.order[p]].clone();
         self.current = Some(first.clone());
+        self.current_is_queued = false;
         Some(first)
     }
 
@@ -257,24 +265,39 @@ impl Queue {
 
     /// Advance within the context, skipping unplayable tracks.
     /// `wrap` allows wrapping to the start (repeat context).
+    ///
+    /// `pos` only moves when a playable track is found, so a failed step
+    /// at the end of the queue leaves the queue where it was.
     fn step_context(&mut self, wrap: bool) -> Option<Track> {
         let n = self.order.len();
-        for _ in 0..n {
-            if self.pos + 1 < n {
-                self.pos += 1;
-            } else if wrap {
+        if n == 0 {
+            return None;
+        }
+        let mut p = self.pos;
+        let mut wrapped = false;
+        for _ in 0..2 * n {
+            if p + 1 < n {
+                p += 1;
+            } else if wrap && !wrapped {
+                wrapped = true;
                 if self.shuffle {
-                    // A new shuffle round, like the official client.
+                    // A new shuffle round, like the official client, but never
+                    // start it with the track that just finished.
+                    let last = self.order[self.pos];
                     let mut o = self.order.clone();
                     o.shuffle(&mut self.rng);
+                    if n > 1 && o[0] == last {
+                        o.swap(0, n - 1);
+                    }
                     self.order = o;
                 }
-                self.pos = 0;
+                p = 0;
             } else {
                 return None;
             }
-            let t = &self.tracks[self.order[self.pos]];
+            let t = &self.tracks[self.order[p]];
             if t.playable {
+                self.pos = p;
                 return Some(t.clone());
             }
         }
@@ -287,10 +310,17 @@ impl Queue {
             return self.current.clone();
         }
         let next = match self.user_queue.pop_front() {
-            Some(t) => Some(t),
+            Some(t) => {
+                self.current_is_queued = true;
+                Some(t)
+            }
             None => {
                 let wrap = self.repeat != Repeat::Off;
-                self.step_context(wrap)
+                let t = self.step_context(wrap);
+                if t.is_some() {
+                    self.current_is_queued = false;
+                }
+                t
             }
         };
         match next {
@@ -306,6 +336,16 @@ impl Queue {
         if position_ms > RESTART_THRESHOLD_MS || self.order.is_empty() {
             return Previous::Restart;
         }
+        // After a "Next in queue" item, go back to the context track that was
+        // playing before it instead of skipping over it.
+        if self.current_is_queued {
+            let t = self.tracks[self.order[self.pos]].clone();
+            if t.playable {
+                self.current_is_queued = false;
+                self.current = Some(t.clone());
+                return Previous::Play(t);
+            }
+        }
         let mut p = self.pos;
         for _ in 0..self.order.len() {
             if p > 0 {
@@ -319,6 +359,7 @@ impl Queue {
             if t.playable {
                 self.pos = p;
                 self.current = Some(t.clone());
+                self.current_is_queued = false;
                 return Previous::Play(t.clone());
             }
         }
@@ -368,6 +409,7 @@ impl Queue {
             if seen == k {
                 self.pos = p;
                 self.current = Some(t.clone());
+                self.current_is_queued = false;
                 return Some(t.clone());
             }
             seen += 1;
@@ -383,6 +425,7 @@ impl Queue {
         self.user_queue.drain(..k);
         let t = self.user_queue.pop_front()?;
         self.current = Some(t.clone());
+        self.current_is_queued = true;
         Some(t)
     }
 
@@ -403,6 +446,7 @@ impl Queue {
         self.pos = 0;
         self.user_queue.clear();
         self.current = None;
+        self.current_is_queued = false;
     }
 }
 
@@ -700,6 +744,77 @@ mod tests {
                 .play_context(ctx(), vec![], None)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn previous_after_queued_track_returns_to_context_track() {
+        let mut q = Queue::with_seed(1);
+        q.play_context(ctx(), tracks(4), Some(1));
+        q.enqueue(t("x"));
+        assert_eq!(q.next(false).unwrap().id, "x");
+        // Back goes to t1 (playing before the queued item), not t0.
+        assert_eq!(q.previous(0), Previous::Play(t("t1")));
+        assert_eq!(q.previous(0), Previous::Play(t("t0")));
+        // And forward continues the context after the queued item.
+        q.next(false);
+        assert_eq!(q.next(false).unwrap().id, "t2");
+    }
+
+    #[test]
+    fn failed_step_at_end_does_not_move_position() {
+        let mut ts = tracks(3);
+        ts[1].playable = false;
+        ts[2].playable = false;
+        let mut q = Queue::with_seed(1);
+        q.play_context(ctx(), ts, Some(0));
+        assert!(q.next(true).is_none());
+        // Still on t0: "previous" at the start restarts instead of
+        // "going back" to t0 from an unplayable tail track.
+        assert_eq!(q.previous(0), Previous::Restart);
+        assert_eq!(q.current.as_ref().unwrap().id, "t0");
+    }
+
+    #[test]
+    fn unplayable_context_keeps_existing_queue() {
+        let mut q = Queue::with_seed(1);
+        q.play_context(ctx(), tracks(3), Some(1));
+        q.enqueue(t("x"));
+        let mut bad = tracks(2);
+        for b in &mut bad {
+            b.playable = false;
+        }
+        let other = PlayContext {
+            name: "other".into(),
+            route: None,
+        };
+        assert!(q.play_context(other, bad, Some(0)).is_none());
+        assert_eq!(q.context.as_ref().unwrap().name, "ctx");
+        assert_eq!(q.current.as_ref().unwrap().id, "t1");
+        assert_eq!(ids(&q), vec!["t2"]);
+        assert_eq!(q.user_queue.len(), 1);
+    }
+
+    #[test]
+    fn start_on_unplayable_finds_next_playable_without_reshuffle() {
+        let mut ts = tracks(3);
+        ts[2].playable = false;
+        let mut q = Queue::with_seed(1);
+        // Starting on the last (unplayable) track wraps to t0.
+        assert_eq!(q.play_context(ctx(), ts, Some(2)).unwrap().id, "t0");
+    }
+
+    #[test]
+    fn reshuffle_never_repeats_the_last_track_first() {
+        for seed in 0..200 {
+            let mut q = Queue::with_seed(seed);
+            q.shuffle = true;
+            q.repeat = Repeat::Context;
+            q.play_context(ctx(), tracks(3), Some(0));
+            q.next(true);
+            let last = q.next(true).unwrap();
+            let first_of_new_round = q.next(true).unwrap();
+            assert_ne!(first_of_new_round.id, last.id, "seed {seed}");
+        }
     }
 
     #[test]
