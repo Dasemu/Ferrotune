@@ -19,8 +19,12 @@ const SCHEMA_V2: &str = include_str!("schema_v2.sql");
 pub const SCHEMA_VERSION: i64 = 2;
 /// Upper bound on cached entities; oldest are pruned beyond this.
 pub const MAX_ENTITIES: i64 = 2000;
-/// Upper bound on cached HTTP responses.
+/// Upper bound on cached HTTP responses (count).
 pub const MAX_RESPONSES: i64 = 3000;
+/// Upper bound on cached HTTP responses (total body bytes).
+pub const RESPONSE_BUDGET_BYTES: i64 = 64 * 1024 * 1024;
+/// A single response larger than this is not cached at all.
+pub const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -140,6 +144,20 @@ impl Store {
     }
 
     pub fn cache_put(&self, key: &str, body: &[u8]) -> Result<()> {
+        self.cache_put_with(key, body, MAX_RESPONSES, RESPONSE_BUDGET_BYTES)
+    }
+
+    /// `cache_put` with explicit limits (tests).
+    pub fn cache_put_with(
+        &self,
+        key: &str,
+        body: &[u8],
+        max_rows: i64,
+        budget_bytes: i64,
+    ) -> Result<()> {
+        if body.len() > MAX_RESPONSE_BYTES {
+            return Ok(());
+        }
         self.with(|c| {
             c.execute(
                 "INSERT INTO http_cache(key, body, fetched_at) VALUES (?1, ?2, ?3)
@@ -150,8 +168,29 @@ impl Store {
                 "DELETE FROM http_cache WHERE rowid IN (
                     SELECT rowid FROM http_cache ORDER BY fetched_at DESC, rowid DESC LIMIT -1 OFFSET ?1
                  )",
-                params![MAX_RESPONSES],
+                params![max_rows],
             )?;
+            // Byte budget: drop the oldest entries until the total fits.
+            loop {
+                let total: i64 = c.query_row(
+                    "SELECT COALESCE(SUM(length(body)), 0) FROM http_cache",
+                    [],
+                    |r| r.get(0),
+                )?;
+                if total <= budget_bytes {
+                    break;
+                }
+                let removed = c.execute(
+                    "DELETE FROM http_cache WHERE rowid IN (
+                        SELECT rowid FROM http_cache WHERE key != ?1
+                        ORDER BY fetched_at ASC, rowid ASC LIMIT 16
+                     )",
+                    params![key],
+                )?;
+                if removed == 0 {
+                    break;
+                }
+            }
             Ok(())
         })
     }
@@ -325,6 +364,30 @@ mod tests {
         );
         s.clear().unwrap();
         assert!(s.cache_get("GET:sp:/a").unwrap().is_none());
+    }
+
+    #[test]
+    fn response_cache_respects_size_limits() {
+        let s = Store::in_memory().unwrap();
+        s.cache_put("huge", &vec![0u8; MAX_RESPONSE_BYTES + 1])
+            .unwrap();
+        assert!(
+            s.cache_get("huge").unwrap().is_none(),
+            "over the per-response cap"
+        );
+        for i in 0..10 {
+            s.cache_put_with(&format!("k{i}"), &[0u8; 100], 1000, 450)
+                .unwrap();
+        }
+        // 450 bytes of budget hold four 100-byte bodies, newest kept.
+        assert!(s.cache_get("k9").unwrap().is_some());
+        assert!(s.cache_get("k0").unwrap().is_none());
+        let total: i64 = s
+            .with(
+                |c| Ok(c.query_row("SELECT SUM(length(body)) FROM http_cache", [], |r| r.get(0))?),
+            )
+            .unwrap();
+        assert!(total <= 450);
     }
 
     #[test]
