@@ -10,6 +10,7 @@ use crate::net::DataSource;
 use crate::net::images::DecodedImage;
 use crate::net::model::{
     Album, ArtistPage, HomeFeed, Library, Lyrics, Page, Playlist, SearchResults, Track, User,
+    UserProfile,
 };
 use crate::net::mpris::MediaEvent;
 use crate::net::playback::PlaybackEvent;
@@ -101,6 +102,8 @@ pub enum Ui {
     /// Play on a device: `Some((id, name))`, or `None` = this computer.
     PlayOn(Option<(String, String)>),
     DismissBanner,
+    ToggleUserMenu,
+    Setting(super::settings::SettingChange),
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +148,15 @@ pub enum Done {
     ReconnectAudio,
     /// A Spotify Connect controller request finished.
     ConnectSent(Result<()>),
+    /// Owner display names: `(username, name)`.
+    OwnerNames(Vec<(String, String)>),
+    /// Playlists completed lazily: `(id, header, first tracks)`.
+    PlaylistFill(Vec<(String, Playlist, Vec<Track>)>),
+    UserProfile(String, Result<UserProfile>),
+    /// Size of the local cache in bytes.
+    CacheSize(Result<u64>),
+    CacheCleared(Result<()>),
+    SettingsSaved(Result<()>),
     Screenshot(iced::window::Screenshot),
     ScreenshotSaved(Result<()>),
     Quit,

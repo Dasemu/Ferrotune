@@ -163,13 +163,10 @@ pub fn view(app: &App) -> El<'_> {
                     r.playlists
                         .iter()
                         .map(|p| {
-                            card(
+                            super::widgets::playlist_card(
                                 app,
-                                &p.images,
-                                &p.name,
-                                format!("By {}", p.owner),
-                                false,
-                                Icon::Music,
+                                p,
+                                format!("By {}", app.owner_label(&p.owner)),
                                 ui(Ui::Navigate(Route::Playlist(p.id.clone()))),
                                 Some(app.playlist_target(p)),
                             )

@@ -166,52 +166,47 @@ const PLAYLISTS: &[(&str, &str, &str, &str)] = &[
         "pl01",
         "Late Night Drive",
         "Synths, city lights and empty highways.",
-        "Mock Listener",
+        "mockuser",
     ),
     (
         "pl02",
         "Focus Flow",
         "Instrumental beats to keep you in the zone.",
-        "Ferrotune",
+        "spotify",
     ),
     (
         "pl03",
         "Sunday Morning",
         "Slow coffee, soft vocals.",
-        "Mock Listener",
+        "mockuser",
     ),
     (
         "pl04",
         "Indie Garden",
         "Fresh indie picks, updated weekly.",
-        "Ferrotune",
+        "spotify",
     ),
-    (
-        "pl05",
-        "Workout Mix",
-        "High tempo, no skips.",
-        "Mock Listener",
-    ),
+    ("pl05", "Workout Mix", "High tempo, no skips.", "mockuser"),
     (
         "pl06",
         "Rainy Day Jazz",
         "Brushes, upright bass and rain on the window.",
-        "Ferrotune",
+        "spotify",
     ),
-    ("pl07", "Road Trip 2025", "Windows down.", "Mock Listener"),
+    ("pl07", "Road Trip 2025", "Windows down.", "mockuser"),
     (
         "pl08",
         "Deep Focus",
         "Ambient textures for deep work.",
-        "Ferrotune",
+        "spotify",
     ),
     (
         "pl09",
         "Throwback Jams",
         "The songs you forgot you loved.",
-        "Mock Listener",
+        "mockuser",
     ),
-    ("pl10", "Chill Vibes", "Kick back and relax.", "Ferrotune"),
+    ("pl10", "Chill Vibes", "Kick back and relax.", "x7friend"),
 ];
 
 pub fn image_url(seed: &str) -> String {
@@ -343,9 +338,44 @@ pub fn user() -> User {
     }
 }
 
+/// Public profile for the mock users.
+pub fn profile(user: &str) -> crate::net::model::UserProfile {
+    let name = match user {
+        "mockuser" => "Mock Listener",
+        "x7friend" => "Riley",
+        "spotify" => "Spotify",
+        other => other,
+    };
+    let playlists: Vec<Playlist> = (0..PLAYLISTS.len())
+        .map(playlist_at)
+        .filter(|p| p.owner == user)
+        .collect();
+    crate::net::model::UserProfile {
+        id: user.to_owned(),
+        name: name.to_owned(),
+        image: None,
+        followers: Some(42),
+        following: Some(17),
+        total_playlists: Some(playlists.len() as u64),
+        playlists,
+    }
+}
+
 pub fn library() -> Library {
     Library {
-        playlists: (0..PLAYLISTS.len()).map(playlist_at).collect(),
+        playlists: (0..PLAYLISTS.len())
+            .map(playlist_at)
+            .map(|mut p| {
+                // Like a personalised list in a real rootlist: no name or
+                // picture until its own attributes are fetched.
+                if p.id == "pl08" {
+                    p.name.clear();
+                    p.description.clear();
+                    p.images.clear();
+                }
+                p
+            })
+            .collect(),
         albums: (0..ALBUMS.len())
             .map(|i| {
                 let mut a = album_full(i);

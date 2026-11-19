@@ -143,9 +143,13 @@ pub fn view(app: &App) -> El<'_> {
         for p in &lib.playlists {
             list = list.push(item(
                 app,
-                sidebar_art(app, &p.images, false, Icon::Music),
-                &p.name,
-                format!("Playlist • {}", p.owner),
+                super::widgets::playlist_art(app, p, M.art_sidebar),
+                if p.name.trim().is_empty() {
+                    "Playlist"
+                } else {
+                    p.name.as_str()
+                },
+                format!("Playlist • {}", app.owner_label(&p.owner)),
                 Route::Playlist(p.id.clone()),
                 Some(app.playlist_target(p)),
             ));

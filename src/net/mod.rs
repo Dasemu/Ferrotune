@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use model::{
     Album, ArtistPage, HomeFeed, Library, Lyrics, Page, Playlist, SearchResults, Track, User,
+    UserProfile,
 };
 
 use crate::error::Result;
@@ -58,6 +59,13 @@ impl DataSource {
         match self {
             Self::Spotify(b) => b.library.me().await,
             Self::Mock => Ok(mock::user()),
+        }
+    }
+
+    pub async fn profile(&self, user: String, playlists: u32) -> Result<UserProfile> {
+        match self {
+            Self::Spotify(b) => b.library.profile(&user, playlists).await,
+            Self::Mock => Ok(mock::profile(&user)),
         }
     }
 

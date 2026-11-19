@@ -20,6 +20,9 @@ pub enum Route {
     Playlist(String),
     Album(String),
     Artist(String),
+    /// A user's profile page (username).
+    Profile(String),
+    Settings,
 }
 
 impl Route {
@@ -32,6 +35,8 @@ impl Route {
             Self::Playlist(id) => format!("playlist:{id}"),
             Self::Album(id) => format!("album:{id}"),
             Self::Artist(id) => format!("artist:{id}"),
+            Self::Profile(u) => format!("user:{u}"),
+            Self::Settings => "settings".into(),
         }
     }
 
@@ -42,11 +47,13 @@ impl Route {
                 "search" => Self::Search,
                 "library" => Self::Library,
                 "liked" => Self::Liked,
+                "settings" => Self::Settings,
                 _ => return None,
             },
             Some(("playlist", id)) => Self::Playlist(id.into()),
             Some(("album", id)) => Self::Album(id.into()),
             Some(("artist", id)) => Self::Artist(id.into()),
+            Some(("user", u)) => Self::Profile(u.into()),
             Some(_) => return None,
         })
     }
@@ -156,6 +163,10 @@ impl<V> Bounded<V> {
 
     pub fn remove(&mut self, k: &str) -> Option<V> {
         self.0.pop(k)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.0.iter().map(|(_, v)| v)
     }
 
     pub fn clear(&mut self) {

@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use super::model::{
     Album, AlbumKind, AlbumRef, Artist, ArtistRef, Image, LyricLine, Lyrics, Playlist, Track,
+    UserProfile,
 };
 
 pub const IMAGE_CDN: &str = "https://i.scdn.co/image/";
@@ -533,6 +534,63 @@ pub fn lyrics(v: &Value) -> Option<Lyrics> {
     })
 }
 
+/// Parse `user-profile-view/v3/profile/<user>` JSON. Unknown or missing
+/// fields are left empty; the username is the fallback name.
+pub fn user_profile(username: &str, v: &Value) -> UserProfile {
+    let str_at = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    let https = |u: Option<String>| u.filter(|u| u.starts_with("https://"));
+    let playlists = v
+        .get("public_playlists")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| {
+                    let uri = str_at(p, "uri")?;
+                    let (kind, id) = split_uri(&uri)?;
+                    if kind != "playlist" {
+                        return None;
+                    }
+                    let owner = str_at(p, "owner_uri")
+                        .and_then(|o| o.strip_prefix("spotify:user:").map(str::to_owned))
+                        .unwrap_or_else(|| username.to_owned());
+                    Some(Playlist {
+                        id: id.to_owned(),
+                        uri: format!("spotify:playlist:{id}"),
+                        name: str_at(p, "name").unwrap_or_default(),
+                        description: String::new(),
+                        owner,
+                        images: https(str_at(p, "image_url"))
+                            .map(|url| {
+                                vec![Image {
+                                    url,
+                                    width: None,
+                                    height: None,
+                                }]
+                            })
+                            .unwrap_or_default(),
+                        can_edit: None,
+                        mosaic: Vec::new(),
+                        total_tracks: 0,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    UserProfile {
+        id: username.to_owned(),
+        name: str_at(v, "name")
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| username.to_owned()),
+        image: https(str_at(v, "image_url")),
+        followers: v.get("followers_count").and_then(Value::as_u64),
+        following: v.get("following_count").and_then(Value::as_u64),
+        playlists,
+        total_playlists: v
+            .get("total_public_playlists_count")
+            .and_then(Value::as_u64),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,5 +686,64 @@ mod tests {
         assert!(l.synced);
         assert_eq!(l.lines[1].start_ms, 3000);
         assert_eq!(l.provider.as_deref(), Some("Provider"));
+    }
+
+    #[test]
+    fn user_profile_parses_and_tolerates_junk() {
+        let v: Value = serde_json::json!({
+            "uri": "spotify:user:0d2x",
+            "name": "Ana",
+            "image_url": "https://i.scdn.co/image/ab",
+            "followers_count": 12,
+            "following_count": 3,
+            "total_public_playlists_count": 2,
+            "public_playlists": [
+                {"uri": "spotify:playlist:p1", "name": "Road", "image_url": "https://mosaic.scdn.co/640/x", "owner_uri": "spotify:user:0d2x"},
+                {"uri": "spotify:artist:nope"},
+                {"name": "no uri"}
+            ]
+        });
+        let p = user_profile("0d2x", &v);
+        assert_eq!(p.name, "Ana");
+        assert_eq!(p.followers, Some(12));
+        assert_eq!(p.following, Some(3));
+        assert_eq!(p.playlists.len(), 1);
+        assert_eq!(p.playlists[0].owner, "0d2x");
+        let empty = user_profile("bob", &serde_json::json!({"image_url": "http://x"}));
+        assert_eq!(empty.name, "bob");
+        assert_eq!(empty.image, None);
+    }
+
+    #[test]
+    fn list_images_fall_back_to_picture_sizes_and_format_attributes() {
+        use librespot_protocol::playlist4_external::{FormatListAttribute, PictureSize};
+        let mut a = ListAttributes::new();
+        assert!(list_images(Some(&a)).is_empty());
+        let mut f = FormatListAttribute::new();
+        f.set_key("image_url".into());
+        f.set_value("https://dailymix-images.scdn.co/x".into());
+        a.format_attributes.push(f);
+        assert_eq!(
+            list_images(Some(&a))[0].url,
+            "https://dailymix-images.scdn.co/x"
+        );
+        let mut ps = PictureSize::new();
+        ps.set_target_name("large".into());
+        ps.set_url("https://mosaic.scdn.co/640/abc".into());
+        a.picture_size.push(ps);
+        let mut bad = PictureSize::new();
+        bad.set_url("javascript:x".into());
+        a.picture_size.push(bad);
+        let imgs = list_images(Some(&a));
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(imgs[0].width, Some(640));
+        a.set_picture(GID.to_vec());
+        assert!(list_images(Some(&a))[0].url.starts_with(IMAGE_CDN));
+        let mut named = ListAttributes::new();
+        let mut t = FormatListAttribute::new();
+        t.set_key("title".into());
+        t.set_value("Daily Mix 1".into());
+        named.format_attributes.push(t);
+        assert_eq!(list_name(Some(&named)), "Daily Mix 1");
     }
 }

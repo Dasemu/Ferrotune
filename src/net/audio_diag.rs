@@ -66,7 +66,7 @@ pub fn parse_key_error(message: &str) -> Option<u16> {
     let mut it = rest.split_whitespace();
     let hi = u16::from_str_radix(it.next()?, 16).ok()?;
     let lo = u16::from_str_radix(it.next()?, 16).ok()?;
-    Some(hi.checked_mul(256)?.checked_add(lo)?)
+    hi.checked_mul(256)?.checked_add(lo)
 }
 
 /// Category of one of librespot's player error/warning messages.

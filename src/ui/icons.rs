@@ -51,6 +51,10 @@ icons! {
     Maximize => "maximize-2",
     Device => "laptop-minimal",
     Lyrics => "mic-vocal",
+    Smartphone => "smartphone",
+    Speaker => "speaker",
+    Tv => "tv",
+    Settings => "settings",
 }
 
 pub fn handle(icon: Icon) -> svg::Handle {

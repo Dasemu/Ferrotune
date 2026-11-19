@@ -36,7 +36,7 @@ use super::backend::{CatalogApi, LibraryApi, LyricsApi, PlaylistApi};
 use super::client::{COLLECTION_PROTO, InternalClient, JSON, PROTOBUF, Request, Target};
 use super::model::{
     Album, Artist, ArtistPage, Card, HomeFeed, Library, Lyrics, Page, Playlist, SearchResults,
-    Shelf, Track, User,
+    Shelf, Track, User, UserProfile,
 };
 use super::playlist_edit::{self, Edit};
 use super::proto::{self, CollectionItem};
@@ -794,35 +794,51 @@ impl LibraryApi for Internal {
         Box::pin(async move {
             let auth = self.client.auth();
             let username = auth.username();
+            if username.is_empty() {
+                tracing::warn!("the session has no username yet; profile left empty");
+            }
+            // The profile view is cosmetic: fall back to the username, so
+            // nothing (ownership checks included) depends on it.
+            let (display_name, image) = match self.profile(&username, 0).await {
+                Ok(p) => (p.name, p.image),
+                Err(e) => {
+                    tracing::debug!(error = %e, "profile fetch failed; using the username");
+                    (username.clone(), None)
+                }
+            };
+            Ok(User {
+                display_name,
+                image,
+                id: username,
+                product: auth.product(),
+            })
+        })
+    }
+
+    fn profile<'a>(&'a self, user: &'a str, playlists: u32) -> BoxFuture<'a, Result<UserProfile>> {
+        Box::pin(async move {
+            if user.is_empty() {
+                return Err(Error::Http {
+                    status: 404,
+                    message: "no username".into(),
+                });
+            }
+            let n = playlists.min(50);
             let bytes = self
                 .client
                 .send(
                     Request::get(
                         Target::Spclient(format!(
-                            "/user-profile-view/v3/profile/{}?playlist_limit=0&artist_limit=0&episode_limit=0",
-                            enc(&username)
+                            "/user-profile-view/v3/profile/{}?playlist_limit={n}&artist_limit=0&episode_limit=0&market=from_token",
+                            enc(user)
                         )),
                         JSON,
                     )
                     .ttl(TTL_PROFILE),
                 )
-                .await;
-            // The profile view is cosmetic: fall back to the username.
-            let v = bytes
-                .ok()
-                .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-            Ok(User {
-                display_name: v
-                    .as_ref()
-                    .and_then(|v| v.get("name")?.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| username.clone()),
-                image: v
-                    .as_ref()
-                    .and_then(|v| v.get("image_url")?.as_str().map(str::to_owned))
-                    .filter(|u| !u.is_empty()),
-                id: username,
-                product: auth.product(),
-            })
+                .await?;
+            let v: Value = serde_json::from_slice(&bytes)?;
+            Ok(types::user_profile(user, &v))
         })
     }
 

@@ -146,6 +146,18 @@ pub struct Playlist {
     pub mosaic: Vec<String>,
 }
 
+/// A user's public profile (`user-profile-view`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub id: String,
+    pub name: String,
+    pub image: Option<String>,
+    pub followers: Option<u64>,
+    pub following: Option<u64>,
+    pub playlists: Vec<Playlist>,
+    pub total_playlists: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
     pub id: String,
