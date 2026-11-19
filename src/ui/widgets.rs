@@ -372,8 +372,8 @@ fn track_row<'a>(
     let key = format!("{prefix}#{i}");
     let hovered = app.hovered_row.as_deref() == Some(key.as_str());
     let selected = app.selected_row.as_deref() == Some(key.as_str());
-    let current = app.queue.current.as_ref().is_some_and(|c| c.uri == t.uri);
-    let playing = current && app.playback.is_playing();
+    let current = app.now_track().is_some_and(|c| c.uri == t.uri);
+    let playing = current && app.now_playback().is_playing();
     let liked = app.liked_ids.contains(&t.id);
     let title_color = if current {
         p.accent

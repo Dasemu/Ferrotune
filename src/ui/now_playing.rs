@@ -13,10 +13,11 @@ use crate::app::{App, Ui, ui};
 
 pub fn view(app: &App) -> El<'_> {
     let p = pal();
-    let has_track = app.queue.current.is_some();
+    let has_track = app.now_track().is_some();
+    let pb = app.now_playback();
 
     // Left: art + title + artists + like.
-    let left: El<'_> = match &app.queue.current {
+    let left: El<'_> = match app.now_track() {
         Some(t) => {
             let liked = app.liked_ids.contains(&t.id);
             let title_btn = button(label(
@@ -30,16 +31,26 @@ pub fn view(app: &App) -> El<'_> {
             .on_press_maybe(
                 t.album
                     .as_ref()
+                    .filter(|a| !a.id.is_empty())
                     .map(|a| ui(Ui::Navigate(Route::Album(a.id.clone())))),
             );
+            let mut info = column![
+                clipped(title_btn),
+                artist_links(&t.artists, M.font_xs + 1.0, true)
+            ]
+            .spacing(4)
+            .width(200);
+            if app.remote.is_some() {
+                info = info.push(label(
+                    "Playing via Spotify Connect",
+                    M.font_xs,
+                    p.accent,
+                    theme::FONT_SEMIBOLD,
+                ));
+            }
             row![
                 art(app, t.images(), 56.0, false, Icon::Music),
-                column![
-                    clipped(title_btn),
-                    artist_links(&t.artists, M.font_xs + 1.0, true)
-                ]
-                .spacing(4)
-                .width(200),
+                info,
                 button(if liked {
                     icon(Icon::HeartFilled, 16.0, p.accent)
                 } else {
@@ -57,10 +68,7 @@ pub fn view(app: &App) -> El<'_> {
     };
 
     // Center: transport + seek bar.
-    let playing = matches!(
-        app.playback.status,
-        PlayStatus::Playing | PlayStatus::Loading
-    );
+    let playing = matches!(pb.status, PlayStatus::Playing | PlayStatus::Loading);
     let play = button(
         container(icon(
             if playing { Icon::Pause } else { Icon::Play },
@@ -100,8 +108,8 @@ pub fn view(app: &App) -> El<'_> {
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    let dur = app.playback.duration_ms;
-    let pos = app.playback.position(app.now);
+    let dur = pb.duration_ms;
+    let pos = pb.position(app.now);
     let frac = if dur > 0 {
         pos as f32 / dur as f32
     } else {
@@ -127,7 +135,7 @@ pub fn view(app: &App) -> El<'_> {
         .max_width(722);
 
     // Right: queue toggle + volume.
-    let vol = app.playback.effective_volume();
+    let vol = pb.effective_volume();
     let vol_icon = if vol <= 0.0 {
         Icon::VolumeMute
     } else if vol < 0.5 {
@@ -136,9 +144,14 @@ pub fn view(app: &App) -> El<'_> {
         Icon::Volume
     };
     let right = row![
-        icon_button(Icon::Lyrics, 16.0, None, false),
+        icon_button(
+            Icon::Lyrics,
+            16.0,
+            has_track.then(|| ui(Ui::ToggleLyrics)),
+            app.show_lyrics
+        ),
         icon_button(Icon::Queue, 16.0, Some(ui(Ui::ToggleQueue)), app.show_queue),
-        icon_button(Icon::Device, 16.0, None, false),
+        icon_button(Icon::Device, 16.0, None, app.remote.is_some()),
         icon_button(vol_icon, 16.0, Some(ui(Ui::ToggleMute)), false),
         slider(0.0..=1.0, vol, |v| ui(Ui::Volume(v)))
             .step(0.01_f32)
