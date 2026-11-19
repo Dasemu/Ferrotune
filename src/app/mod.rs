@@ -221,6 +221,7 @@ async fn restore_session(
 async fn login_flow(
     config: Arc<Config>,
     secrets: Arc<dyn SecretStore>,
+    listener: std::net::TcpListener,
     state: String,
     verifier: crate::auth::secrets::Secret,
 ) -> Result<SessionReady> {
@@ -228,7 +229,7 @@ async fn login_flow(
         .client_id
         .clone()
         .ok_or_else(|| Error::auth("No client id configured."))?;
-    let code = oauth::wait_for_callback(config.redirect_port, state, LOGIN_TIMEOUT).await?;
+    let code = oauth::wait_for_callback(listener, state, LOGIN_TIMEOUT).await?;
     let http = http_client();
     let tokens = oauth::exchange_code(
         &http,
@@ -536,6 +537,17 @@ impl App {
                 return Task::none();
             }
         };
+        if let Some(h) = self.login_abort.take() {
+            h.abort();
+        }
+        // Bind first so the browser redirect can never beat the listener.
+        let listener = match oauth::bind_callback(self.config.redirect_port) {
+            Ok(l) => l,
+            Err(e) => {
+                self.auth = self.auth.apply(AuthEvent::Failed(e));
+                return Task::none();
+            }
+        };
         if let Err(e) = oauth::open_browser(&url) {
             tracing::warn!(error = %e, "could not open browser; showing URL");
         }
@@ -544,6 +556,7 @@ impl App {
             login_flow(
                 self.config.clone(),
                 self.secrets.clone(),
+                listener,
                 state,
                 pkce.verifier,
             ),

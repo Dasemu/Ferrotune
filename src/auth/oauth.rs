@@ -83,18 +83,33 @@ pub fn authorize_url(
     Ok(url.to_string())
 }
 
+/// What one request on the loopback listener means for the login.
+#[derive(Debug)]
+pub enum Callback {
+    /// The authorization code: login can continue.
+    Code(Secret),
+    /// Not (validly) ours: answer with this status and keep listening.
+    Ignore(&'static str),
+    /// Spotify reported an error for *our* state (e.g. the user denied).
+    Failed(Error),
+}
+
 /// Parse the HTTP request line the browser sends to the loopback listener
-/// (`GET /login?code=..&state=.. HTTP/1.1`) and return the authorization code.
-pub fn parse_callback(request_line: &str, expected_state: &str) -> Result<Option<Secret>> {
+/// (`GET /login?code=..&state=.. HTTP/1.1`).
+///
+/// Anything that does not carry our `state` is ignored (400) so a stray or
+/// hostile local request cannot abort the login.
+pub fn parse_callback(request_line: &str, expected_state: &str) -> Callback {
     let mut parts = request_line.split_whitespace();
     let (Some("GET"), Some(target)) = (parts.next(), parts.next()) else {
-        return Err(Error::auth("unexpected request on the login callback"));
+        return Callback::Ignore("400 Bad Request");
     };
-    let url = url::Url::parse(&format!("http://127.0.0.1{target}"))
-        .map_err(|_| Error::auth("malformed login callback"))?;
+    let Ok(url) = url::Url::parse(&format!("http://127.0.0.1{target}")) else {
+        return Callback::Ignore("400 Bad Request");
+    };
     if url.path() != "/login" {
-        // e.g. /favicon.ico — not ours, keep waiting.
-        return Ok(None);
+        // e.g. /favicon.ico
+        return Callback::Ignore("404 Not Found");
     }
     let mut code = None;
     let mut state = None;
@@ -107,18 +122,20 @@ pub fn parse_callback(request_line: &str, expected_state: &str) -> Result<Option
             _ => {}
         }
     }
+    if state.as_deref() != Some(expected_state) {
+        return Callback::Ignore("400 Bad Request");
+    }
     if let Some(e) = error {
-        return Err(Error::auth(if e == "access_denied" {
+        return Callback::Failed(Error::auth(if e == "access_denied" {
             "Login was cancelled in the browser.".to_owned()
         } else {
             format!("Spotify rejected the login ({e}).")
         }));
     }
-    if state.as_deref() != Some(expected_state) {
-        return Err(Error::auth("Login state mismatch; please try again."));
+    match code {
+        Some(c) if !c.is_empty() => Callback::Code(Secret::new(c)),
+        _ => Callback::Ignore("400 Bad Request"),
     }
-    code.map(|c| Some(Secret::new(c)))
-        .ok_or_else(|| Error::auth("Login callback had no code."))
 }
 
 const CALLBACK_HTML: &str = "<!doctype html><html><head><meta charset=utf-8><title>Ferrotune</title>\
@@ -126,43 +143,63 @@ const CALLBACK_HTML: &str = "<!doctype html><html><head><meta charset=utf-8><tit
 justify-content:center;height:100vh;margin:0}</style></head><body><div><h1>You're logged in</h1>\
 <p>You can close this tab and return to Ferrotune.</p></div></body></html>";
 
-/// Listen on `127.0.0.1:<port>` until the browser delivers the callback.
+/// Per-connection limit for the browser to send its request line.
+const READ_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Bind the loopback listener. Call this BEFORE opening the browser so the
+/// redirect can never race the listener (and a busy port fails early).
+pub fn bind_callback(port: u16) -> Result<std::net::TcpListener> {
+    let l = std::net::TcpListener::bind(("127.0.0.1", port))
+        .map_err(|e| Error::auth(format!("Can't listen on port {port}: {e}")))?;
+    l.set_nonblocking(true)?;
+    Ok(l)
+}
+
+/// Wait on an already bound listener until the browser delivers the code.
 pub async fn wait_for_callback(
-    port: u16,
+    listener: std::net::TcpListener,
     expected_state: String,
     timeout: Duration,
 ) -> Result<Secret> {
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .await
-        .map_err(|e| Error::auth(format!("Can't listen on port {port}: {e}")))?;
+    let listener = TcpListener::from_std(listener)?;
     tokio::time::timeout(timeout, accept_loop(listener, &expected_state))
         .await
         .map_err(|_| Error::auth("Timed out waiting for the browser login."))?
 }
 
+async fn read_request_line(sock: &mut tokio::net::TcpStream) -> Option<String> {
+    let mut buf = vec![0u8; 8192];
+    let mut len = 0;
+    while len < buf.len() {
+        let n = sock.read(&mut buf[len..]).await.ok()?;
+        if n == 0 {
+            break;
+        }
+        len += n;
+        if buf[..len].windows(2).any(|w| w == b"\r\n") {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&buf[..len]);
+    text.lines().next().map(str::to_owned)
+}
+
 async fn accept_loop(listener: TcpListener, expected_state: &str) -> Result<Secret> {
     loop {
-        let (mut sock, _) = listener.accept().await?;
-        let mut buf = vec![0u8; 8192];
-        let mut len = 0;
-        // Read until the end of the request line (we ignore headers).
-        while len < buf.len() {
-            let n = sock.read(&mut buf[len..]).await?;
-            if n == 0 {
-                break;
-            }
-            len += n;
-            if buf[..len].windows(2).any(|w| w == b"\r\n") {
-                break;
-            }
-        }
-        let text = String::from_utf8_lossy(&buf[..len]);
-        let line = text.lines().next().unwrap_or_default().to_owned();
+        let Ok((mut sock, _)) = listener.accept().await else {
+            continue;
+        };
+        // A client that connects and sends nothing must not block the login.
+        let line = tokio::time::timeout(READ_TIMEOUT, read_request_line(&mut sock))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         let result = parse_callback(&line, expected_state);
         let (status, body) = match &result {
-            Ok(Some(_)) => ("200 OK", CALLBACK_HTML.to_owned()),
-            Ok(None) => ("404 Not Found", String::new()),
-            Err(e) => (
+            Callback::Code(_) => ("200 OK", CALLBACK_HTML.to_owned()),
+            Callback::Ignore(status) => (*status, String::new()),
+            Callback::Failed(e) => (
                 "400 Bad Request",
                 format!("Login failed: {}", e.user_message()),
             ),
@@ -171,12 +208,12 @@ async fn accept_loop(listener: TcpListener, expected_state: &str) -> Result<Secr
             "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
-        let _ = sock.write_all(resp.as_bytes()).await;
+        let _ = tokio::time::timeout(READ_TIMEOUT, sock.write_all(resp.as_bytes())).await;
         let _ = sock.shutdown().await;
         match result {
-            Ok(Some(code)) => return Ok(code),
-            Ok(None) => continue,
-            Err(e) => return Err(e),
+            Callback::Code(code) => return Ok(code),
+            Callback::Ignore(_) => continue,
+            Callback::Failed(e) => return Err(e),
         }
     }
 }
@@ -413,17 +450,34 @@ mod tests {
 
     #[test]
     fn callback_parsing() {
-        let ok = parse_callback("GET /login?code=abc&state=s1 HTTP/1.1", "s1").unwrap();
-        assert_eq!(ok.unwrap().expose(), "abc");
+        let code = |c: Callback| match c {
+            Callback::Code(s) => Some(s.expose().to_owned()),
+            _ => None,
+        };
+        let ok = parse_callback("GET /login?code=abc&state=s1 HTTP/1.1", "s1");
+        assert_eq!(code(ok).as_deref(), Some("abc"));
         assert!(
-            parse_callback("GET /favicon.ico HTTP/1.1", "s1")
-                .unwrap()
-                .is_none()
+            matches!(parse_callback("GET /favicon.ico HTTP/1.1", "s1"), Callback::Ignore(s) if s.starts_with("404"))
         );
-        assert!(parse_callback("GET /login?code=abc&state=evil HTTP/1.1", "s1").is_err());
-        let denied = parse_callback("GET /login?error=access_denied&state=s1 HTTP/1.1", "s1");
-        assert!(denied.unwrap_err().user_message().contains("cancelled"));
-        assert!(parse_callback("POST /login HTTP/1.1", "s1").is_err());
+        // Wrong, missing state or malformed requests are ignored, not fatal.
+        for line in [
+            "GET /login?code=abc&state=evil HTTP/1.1",
+            "GET /login?code=abc HTTP/1.1",
+            "GET /login?error=access_denied HTTP/1.1",
+            "POST /login HTTP/1.1",
+            "garbage",
+            "",
+            "GET /login?state=s1 HTTP/1.1",
+        ] {
+            assert!(
+                matches!(parse_callback(line, "s1"), Callback::Ignore(_)),
+                "{line}"
+            );
+        }
+        match parse_callback("GET /login?error=access_denied&state=s1 HTTP/1.1", "s1") {
+            Callback::Failed(e) => assert!(e.user_message().contains("cancelled")),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -458,16 +512,29 @@ mod tests {
 
     #[tokio::test]
     async fn loopback_listener_receives_code() {
-        // Bind on an ephemeral port first to find a free one.
-        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = probe.local_addr().unwrap().port();
-        drop(probe);
+        let listener = bind_callback(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(wait_for_callback(
-            port,
+            listener,
             "xyz".into(),
-            Duration::from_secs(5),
+            Duration::from_secs(20),
         ));
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // A silent client, a stray request and a wrong state must not abort.
+        let _silent = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        for bad in [
+            "GET /favicon.ico HTTP/1.1\r\n\r\n",
+            "GET /login?code=x&state=evil HTTP/1.1\r\n\r\n",
+        ] {
+            let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            s.write_all(bad.as_bytes()).await.unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).await.unwrap();
+            assert!(resp.starts_with("HTTP/1.1 4"), "{resp}");
+        }
         let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
