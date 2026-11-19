@@ -1,14 +1,25 @@
 name: Version
 
-# development push          -> bump PATCH
-# merged development -> main -> bump MINOR, reset PATCH
-# direct push to main        -> bump PATCH
+# development push              -> bump PATCH
+# development -> main PR merged -> bump MINOR, reset PATCH (merge, squash or
+#                                  rebase), then sync the bump back to development
+# direct push to main           -> bump PATCH
+#
+# Bump commits start with `chore(release)` and are skipped by the guard below
+# (pushes made with GITHUB_TOKEN don't retrigger workflows anyway).
+# Protected branches: allow `github-actions[bot]` to push to `main` and
+# `development` (ruleset bypass), or replace GITHUB_TOKEN with a bot token.
 on:
   push:
     branches: [main, development]
 
 permissions:
   contents: write
+  pull-requests: read
+
+concurrency:
+  group: version-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   bump:
@@ -17,18 +28,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Branch tip, not the triggering SHA, so we never push a stale base.
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
+
       - name: Decide bump
         id: kind
         env:
-          MSG: ${{ github.event.head_commit.message }}
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
         run: |
-          if [ "${GITHUB_REF_NAME}" = "main" ] && echo "$MSG" | grep -qE "^Merge pull request .*/development"; then
-            echo "kind=minor" >> "$GITHUB_OUTPUT"
-          else
-            echo "kind=patch" >> "$GITHUB_OUTPUT"
+          kind=patch
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            # PRs associated with the pushed commit (works for merge, squash
+            # and rebase merges).
+            heads=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+              --jq '[.[] | select(.merged_at != null and .base.ref == "main") | .head.ref] | join(" ")' || true)
+            if echo " $heads " | grep -q " development "; then
+              kind=minor
+            else
+              # Fallback: a merge commit whose second parent is on development.
+              git fetch origin development --quiet || true
+              parents=$(git rev-list --parents -n 1 "$SHA" | wc -w)
+              if [ "$parents" -ge 3 ] && git merge-base --is-ancestor "$SHA^2" origin/development 2>/dev/null; then
+                kind=minor
+              fi
+            fi
           fi
-      - name: Bump Cargo.toml
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "bump: $kind"
+
+      - name: Bump Cargo.toml / Cargo.lock
         id: bump
         run: |
           cur=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
@@ -44,9 +75,36 @@ jobs:
             sed -i "/^name = \"ferrotune\"$/{n;s/^version = \".*\"/version = \"$new\"/}" Cargo.lock
           fi
           echo "new=$new" >> "$GITHUB_OUTPUT"
-      - name: Commit
+
+      - name: Commit and push (retry with rebase)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "chore(release): v${{ steps.bump.outputs.new }}"
-          git push
+          for i in 1 2 3 4; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then exit 0; fi
+            sleep $((i * 3))
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+          done
+          echo "push failed after retries" >&2
+          exit 1
+
+      - name: Sync MINOR bump back to development
+        if: ${{ github.ref_name == 'main' && steps.kind.outputs.kind == 'minor' }}
+        run: |
+          new="${{ steps.bump.outputs.new }}"
+          git fetch origin development
+          git checkout -B development origin/development
+          sed -i "0,/^version = \".*\"/s//version = \"$new\"/" Cargo.toml
+          if [ -f Cargo.lock ]; then
+            sed -i "/^name = \"ferrotune\"$/{n;s/^version = \".*\"/version = \"$new\"/}" Cargo.lock
+          fi
+          if git diff --quiet; then echo "development already at $new"; exit 0; fi
+          git commit -am "chore(release): sync v$new to development"
+          for i in 1 2 3 4; do
+            if git push origin HEAD:development; then exit 0; fi
+            sleep $((i * 3))
+            git pull --rebase origin development
+          done
+          echo "sync push failed after retries" >&2
+          exit 1
