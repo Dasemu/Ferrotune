@@ -1,0 +1,1710 @@
+{
+ "href": "x",
+ "items": [
+  {
+   "id": "pl0",
+   "name": "Playlist 0",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl0",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl0640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl0300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl064",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 10
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl1",
+   "name": "Playlist 1",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl1",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl1640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl164",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 11
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl2",
+   "name": "Playlist 2",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl2",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl2640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl264",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 12
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl3",
+   "name": "Playlist 3",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl3",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl3640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl364",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 13
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl4",
+   "name": "Playlist 4",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl4",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl4640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl464",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 14
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl5",
+   "name": "Playlist 5",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl5",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl5640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl5300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl564",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 15
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl6",
+   "name": "Playlist 6",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl6",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl6640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl6300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl664",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 16
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl7",
+   "name": "Playlist 7",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl7",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl7640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl7300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl764",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 17
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl8",
+   "name": "Playlist 8",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl8",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl8640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl8300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl864",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 18
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl9",
+   "name": "Playlist 9",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl9",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl9640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl9300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl964",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 19
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl10",
+   "name": "Playlist 10",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl10",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl10640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl10300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1064",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 20
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl11",
+   "name": "Playlist 11",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl11",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl11640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl11300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1164",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 21
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl12",
+   "name": "Playlist 12",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl12",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl12640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl12300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1264",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 22
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl13",
+   "name": "Playlist 13",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl13",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl13640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl13300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1364",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 23
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl14",
+   "name": "Playlist 14",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl14",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl14640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl14300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1464",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 24
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl15",
+   "name": "Playlist 15",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl15",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl15640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl15300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1564",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 25
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl16",
+   "name": "Playlist 16",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl16",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl16640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl16300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1664",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 26
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl17",
+   "name": "Playlist 17",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl17",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl17640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl17300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1764",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 27
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl18",
+   "name": "Playlist 18",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl18",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl18640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl18300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1864",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 28
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl19",
+   "name": "Playlist 19",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl19",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl19640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl19300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl1964",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 29
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl20",
+   "name": "Playlist 20",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl20",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl20640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl20300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2064",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 30
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl21",
+   "name": "Playlist 21",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl21",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl21640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl21300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2164",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 31
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl22",
+   "name": "Playlist 22",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl22",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl22640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl22300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2264",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 32
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl23",
+   "name": "Playlist 23",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl23",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl23640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl23300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2364",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 33
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl24",
+   "name": "Playlist 24",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl24",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl24640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl24300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2464",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 34
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl25",
+   "name": "Playlist 25",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl25",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl25640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl25300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2564",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 35
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl26",
+   "name": "Playlist 26",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl26",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl26640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl26300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2664",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 36
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl27",
+   "name": "Playlist 27",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl27",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl27640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl27300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2764",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 37
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl28",
+   "name": "Playlist 28",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl28",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl28640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl28300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2864",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 38
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl29",
+   "name": "Playlist 29",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl29",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl29640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl29300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl2964",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 39
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl30",
+   "name": "Playlist 30",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl30",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl30640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl30300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3064",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 40
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl31",
+   "name": "Playlist 31",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl31",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl31640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl31300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3164",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 41
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl32",
+   "name": "Playlist 32",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl32",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl32640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl32300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3264",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 42
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl33",
+   "name": "Playlist 33",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl33",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl33640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl33300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3364",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 43
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl34",
+   "name": "Playlist 34",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl34",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl34640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl34300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3464",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 44
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl35",
+   "name": "Playlist 35",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl35",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl35640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl35300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3564",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 45
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl36",
+   "name": "Playlist 36",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl36",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl36640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl36300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3664",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 46
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl37",
+   "name": "Playlist 37",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl37",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl37640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl37300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3764",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 47
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl38",
+   "name": "Playlist 38",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl38",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl38640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl38300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3864",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 48
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl39",
+   "name": "Playlist 39",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl39",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl39640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl39300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl3964",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 49
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl40",
+   "name": "Playlist 40",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl40",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl40640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl40300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4064",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 50
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl41",
+   "name": "Playlist 41",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl41",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl41640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl41300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4164",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 51
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl42",
+   "name": "Playlist 42",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl42",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl42640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl42300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4264",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 52
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl43",
+   "name": "Playlist 43",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl43",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl43640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl43300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4364",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 53
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl44",
+   "name": "Playlist 44",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl44",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl44640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl44300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4464",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 54
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl45",
+   "name": "Playlist 45",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl45",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl45640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl45300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4564",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 55
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl46",
+   "name": "Playlist 46",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl46",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl46640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl46300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4664",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 56
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl47",
+   "name": "Playlist 47",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl47",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl47640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl47300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4764",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 57
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl48",
+   "name": "Playlist 48",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl48",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl48640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl48300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4864",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 58
+   },
+   "type": "playlist"
+  },
+  {
+   "id": "pl49",
+   "name": "Playlist 49",
+   "description": "Mix &amp; <a href=\"spotify:genre\">match</a>",
+   "uri": "spotify:playlist:pl49",
+   "owner": {
+    "id": "owner",
+    "display_name": "Owner Name",
+    "type": "user"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/pl49640",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/pl49300",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/pl4964",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "public": true,
+   "tracks": {
+    "href": "https://api.spotify.com/v1/playlists/x/tracks",
+    "total": 59
+   },
+   "type": "playlist"
+  }
+ ],
+ "limit": 50,
+ "offset": 0,
+ "total": 60,
+ "next": "https://api.spotify.com/v1/next",
+ "previous": null
+}
