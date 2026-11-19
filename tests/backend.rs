@@ -1091,3 +1091,227 @@ async fn refused_edit_is_an_error_and_rename_sends_attributes() {
         "New name"
     );
 }
+
+// ------------------------------------------------- round 3: real-account fixes
+
+#[tokio::test]
+async fn owner_profile_resolves_display_name_and_is_cached() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path("/user-profile-view/v3/profile/0d2xmxvdik4b9wpltcoke"))
+        .and(query_param("playlist_limit", "50"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("profile_full.json")))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+    let p = e
+        .backend
+        .library
+        .profile("0d2xmxvdik4b9wpltcoke", 50)
+        .await
+        .unwrap();
+    assert_eq!(p.name, "Ana Ruiz");
+    assert_eq!(p.followers, Some(128));
+    assert_eq!(p.following, Some(41));
+    assert_eq!(p.playlists.len(), 2);
+    assert_eq!(p.playlists[0].owner, "spotify");
+    // Second lookup comes from the SQLite HTTP cache (expect(1)).
+    let again = e
+        .backend
+        .library
+        .profile("0d2xmxvdik4b9wpltcoke", 50)
+        .await
+        .unwrap();
+    assert_eq!(again.name, "Ana Ruiz");
+}
+
+#[tokio::test]
+async fn me_survives_a_failing_profile_view() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/user-profile-view/"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&e.server)
+        .await;
+    let me = e.backend.library.me().await.unwrap();
+    // The username stays the id, so ownership checks keep working.
+    assert_eq!(me.id, "ferro_user");
+    assert_eq!(me.display_name, "ferro_user");
+}
+
+#[tokio::test]
+async fn rootlist_carries_capabilities_and_server_rendered_covers() {
+    use librespot_protocol::playlist_permission::Capabilities;
+    use librespot_protocol::playlist4_external::{FormatListAttribute, PictureSize};
+    let e = env().await;
+    mount_metadata(&e.server).await;
+    let mut c = SelectedListContent::new();
+    let mut items = ListItems::new();
+    items.set_pos(0);
+    items.set_truncated(false);
+    // 60: collaborative list we may edit; 61: Daily Mix with a
+    // server-rendered cover and a name only in its format attributes;
+    // 62: list that came without any attributes.
+    for n in [60u8, 61, 62] {
+        let mut it = Item::new();
+        it.set_uri(format!("spotify:playlist:{}", id(n)));
+        items.items.push(it);
+        let mut meta = MetaItem::new();
+        let mut a = ListAttributes::new();
+        match n {
+            60 => {
+                a.set_name("Shared".into());
+                a.set_collaborative(true);
+                let mut caps = Capabilities::new();
+                caps.set_can_edit_items(true);
+                meta.capabilities = MessageField::some(caps);
+                meta.set_owner_username("friend".into());
+            }
+            61 => {
+                let mut f = FormatListAttribute::new();
+                f.set_key("title".into());
+                f.set_value("Daily Mix 1".into());
+                a.format_attributes.push(f);
+                let mut ps = PictureSize::new();
+                ps.set_target_name("default".into());
+                ps.set_url("https://dailymix-images.scdn.co/v2/img/x".into());
+                a.picture_size.push(ps);
+                meta.set_owner_username("spotify".into());
+            }
+            _ => meta.set_owner_username("spotify".into()),
+        }
+        if n != 62 {
+            meta.attributes = MessageField::some(a);
+        }
+        items.meta_items.push(meta);
+    }
+    c.contents = MessageField::some(items);
+    Mock::given(method("GET"))
+        .and(path("/playlist/v2/user/ferro_user/rootlist"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(c.write_to_bytes().unwrap()))
+        .mount(&e.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/collection/v2/paging"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(collection_page(&[], "", "s")))
+        .mount(&e.server)
+        .await;
+    let lib = e.backend.library.library().await.unwrap();
+    let by = |n: u8| lib.playlists.iter().find(|p| p.id == id(n)).unwrap();
+    assert_eq!(by(60).can_edit, Some(true));
+    assert_eq!(by(61).name, "Daily Mix 1");
+    assert_eq!(
+        by(61).images[0].url,
+        "https://dailymix-images.scdn.co/v2/img/x"
+    );
+    // 62 needs a lazy fill: the playlist itself has the metadata.
+    assert!(by(62).name.is_empty() && by(62).images.is_empty());
+    assert!(ferrotune::app::meta::needs_fill(by(62)));
+
+    let entries: Vec<String> = (1..=4).map(|t| uri("track", t)).collect();
+    let mut header =
+        SelectedListContent::parse_from_bytes(&playlist_content(&entries, "Discover Weekly", 30))
+            .unwrap();
+    if let Some(a) = header.attributes.as_mut() {
+        a.clear_picture();
+    }
+    let mut caps = Capabilities::new();
+    caps.set_can_edit_items(false);
+    header.capabilities = MessageField::some(caps);
+    Mock::given(method("GET"))
+        .and(path(format!("/playlist/v2/playlist/{}", id(62))))
+        .and(query_param(
+            "decorate",
+            "revision,length,attributes,timestamp,owner,capabilities",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(header.write_to_bytes().unwrap()))
+        .mount(&e.server)
+        .await;
+    let (h, page) = e.backend.catalog.playlist(&id(62)).await.unwrap();
+    assert_eq!(h.can_edit, Some(false));
+    let mut target = by(62).clone();
+    assert!(ferrotune::app::meta::fill_playlist(
+        &mut target,
+        &h,
+        &page.items
+    ));
+    assert_eq!(target.name, "Discover Weekly");
+    // All test tracks share one album cover: no 2x2 mosaic, one cover.
+    assert!(target.mosaic.is_empty());
+    assert_eq!(target.images.len(), 1);
+}
+
+#[tokio::test]
+async fn connect_controller_sends_official_command_shapes() {
+    use ferrotune::net::connect_ctl::{self, ControlCommand, PlayRequest};
+    let e = env().await;
+    Mock::given(method("POST"))
+        .and(path("/connect-state/v1/player/command/from/me/to/phone"))
+        .and(header("authorization", "Bearer session-token-1"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(2)
+        .mount(&e.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/connect-state/v1/connect/transfer/from/me/to/phone"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/connect-state/v1/connect/volume/from/me/to/phone"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+    connect_ctl::send_command(&e.client, "me", "phone", &ControlCommand::Pause)
+        .await
+        .unwrap();
+    connect_ctl::send_command(
+        &e.client,
+        "me",
+        "phone",
+        &ControlCommand::Play(PlayRequest {
+            context_uri: "spotify:playlist:p1".into(),
+            track_uri: Some("spotify:track:t1".into()),
+            track_index: Some(1),
+            position_ms: None,
+        }),
+    )
+    .await
+    .unwrap();
+    connect_ctl::transfer(&e.client, "me", "phone")
+        .await
+        .unwrap();
+    connect_ctl::set_volume(&e.client, "me", "phone", 0.5)
+        .await
+        .unwrap();
+    let reqs = e.server.received_requests().await.unwrap();
+    let bodies: Vec<serde_json::Value> = reqs
+        .iter()
+        .filter_map(|r| serde_json::from_slice(&r.body).ok())
+        .collect();
+    assert_eq!(bodies[0]["command"]["endpoint"], "pause");
+    assert_eq!(bodies[1]["command"]["endpoint"], "play");
+    assert_eq!(
+        bodies[1]["command"]["options"]["skip_to"]["track_uri"],
+        "spotify:track:t1"
+    );
+    assert_eq!(bodies[3]["volume"], 32768);
+}
+
+#[tokio::test]
+async fn refused_connect_command_is_an_error() {
+    use ferrotune::net::connect_ctl::{self, ControlCommand};
+    let e = env().await;
+    Mock::given(method("POST"))
+        .and(path_regex("^/connect-state/v1/player/command/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&e.server)
+        .await;
+    assert!(
+        connect_ctl::send_command(&e.client, "me", "gone", &ControlCommand::Resume)
+            .await
+            .is_err()
+    );
+}

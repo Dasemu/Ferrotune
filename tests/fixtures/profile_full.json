@@ -1,0 +1,12 @@
+{
+  "uri": "spotify:user:0d2xmxvdik4b9wpltcoke",
+  "name": "Ana Ruiz",
+  "image_url": "https://i.scdn.co/image/ab6775700000ee85",
+  "followers_count": 128,
+  "following_count": 41,
+  "total_public_playlists_count": 2,
+  "public_playlists": [
+    {"uri": "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", "name": "Today's Top Hits", "image_url": "https://i.scdn.co/image/ab67706f00000002", "owner_name": "Spotify", "owner_uri": "spotify:user:spotify"},
+    {"uri": "spotify:playlist:5ZtkL9bpr0Yl7zyJmIXxjr", "name": "Road trip", "image_url": "https://mosaic.scdn.co/640/ab67616d", "owner_name": "Ana Ruiz", "owner_uri": "spotify:user:0d2xmxvdik4b9wpltcoke"}
+  ]
+}
