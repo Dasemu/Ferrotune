@@ -150,11 +150,24 @@ justify-content:center;height:100vh;margin:0}</style></head><body><div><h1>You'r
 /// Per-connection limit for the browser to send its request line.
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// What to tell the user when the login port cannot be opened.
+pub fn port_busy_message(port: u16, e: &std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::AddrInUse {
+        format!(
+            "Port {port} is already in use, so the browser login cannot report back. \
+             Close the program using it (or another Ferrotune login) and try again, \
+             or start Ferrotune with FERROTUNE_REDIRECT_PORT=<free port>."
+        )
+    } else {
+        format!("Can't listen on 127.0.0.1:{port} for the browser login ({e}).")
+    }
+}
+
 /// Bind the loopback listener. Call this BEFORE opening the browser so the
 /// redirect can never race the listener (and a busy port fails early).
 pub fn bind_callback(port: u16) -> Result<std::net::TcpListener> {
     let l = std::net::TcpListener::bind(("127.0.0.1", port))
-        .map_err(|e| Error::auth(format!("Can't listen on port {port}: {e}")))?;
+        .map_err(|e| Error::auth(port_busy_message(port, &e)))?;
     l.set_nonblocking(true)?;
     Ok(l)
 }
@@ -419,6 +432,15 @@ mod tests {
             Callback::Failed(e) => assert!(e.user_message().contains("cancelled")),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn busy_port_explains_how_to_change_it() {
+        let held = bind_callback(0).unwrap();
+        let port = held.local_addr().unwrap().port();
+        let msg = bind_callback(port).unwrap_err().user_message();
+        assert!(msg.contains("FERROTUNE_REDIRECT_PORT"), "{msg}");
+        assert!(msg.contains(&port.to_string()));
     }
 
     #[test]

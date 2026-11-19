@@ -35,6 +35,10 @@ pub enum AuthState {
     },
     /// Exchanging the code / connecting the session.
     Connecting,
+    /// No usable OS keyring (Secret Service): show setup guidance + retry.
+    KeyringUnavailable {
+        detail: String,
+    },
     SignedIn {
         user: User,
     },
@@ -84,6 +88,7 @@ impl AuthState {
             (Self::SignedIn { user }, E::Failed(e)) if !e.is_revoked() => {
                 Self::SignedIn { user: user.clone() }
             }
+            (_, E::Failed(Error::Keyring(detail))) => Self::KeyringUnavailable { detail },
             (_, E::Failed(e)) => Self::SignedOut {
                 error: Some(e.user_message()),
             },
@@ -164,6 +169,17 @@ mod tests {
             AuthState::Connecting.apply(ev),
             AuthState::SignedOut { error: Some(_) }
         ));
+    }
+
+    #[test]
+    fn keyring_failures_show_guidance() {
+        let s = AuthState::Connecting.apply(AuthEvent::Failed(Error::Keyring("no wallet".into())));
+        assert_eq!(
+            s,
+            AuthState::KeyringUnavailable {
+                detail: "no wallet".into()
+            }
+        );
     }
 
     #[test]

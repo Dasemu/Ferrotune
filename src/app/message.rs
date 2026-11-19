@@ -60,6 +60,7 @@ pub enum Ui {
     HoverRow(Option<String>),
     SelectRow(String),
     Login,
+    RetryKeyring,
     CancelLogin,
     OpenLoginUrl,
     CopyLoginUrl,

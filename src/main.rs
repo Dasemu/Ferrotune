@@ -2,7 +2,7 @@
 //! Entry point: logging, config, `iced::application(..).run()`.
 //!
 //! Usage: `ferrotune [--mock] [--screenshot <screen> <out.png>] [--install-desktop-entry]`
-//! Screens: login, home, search, library, playlist, album, artist, liked, queue, lyrics, connect.
+//! Screens: login, home, search, library, playlist, album, artist, liked, queue, lyrics, connect, keyring.
 
 use std::time::Instant;
 

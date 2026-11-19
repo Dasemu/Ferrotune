@@ -119,6 +119,9 @@ pub struct App {
     pub remote: Option<RemotePlayback>,
     /// Reusable credentials are in the keyring (silent login possible).
     has_stored_credentials: bool,
+    /// Stable librespot device id (kv `device_id`), so Spotify Connect does
+    /// not list a new "Ferrotune" device after every start.
+    device_id: String,
     pub hovered_row: Option<String>,
     pub selected_row: Option<String>,
     pub toast: Option<(String, Instant)>,
@@ -180,9 +183,10 @@ where
     )
 }
 
-fn session_options(config: &Config, volume: f32) -> SessionOptions {
+fn session_options(config: &Config, volume: f32, device_id: &str) -> SessionOptions {
     SessionOptions {
         client_id: config.client_id.clone(),
+        device_id: Some(device_id.to_owned()),
         connect: config.connect.then(|| ConnectOptions {
             name: config.device_name.clone(),
             bitrate: config.bitrate.into(),
@@ -224,22 +228,15 @@ async fn save_credentials(secrets: Arc<dyn SecretStore>, creds: StoredCredential
 /// Open the session from stored credentials (no browser). Rejected
 /// credentials are deleted so the next login uses the browser.
 async fn connect_stored(
-    config: Arc<Config>,
     secrets: Arc<dyn SecretStore>,
-    volume: f32,
+    opts: SessionOptions,
 ) -> Result<Option<SpotifySession>> {
     let s = secrets.clone();
     let Some(secret) = blocking(move || s.get(KEY_LIBRESPOT)).await? else {
         return Ok(None);
     };
     let result = match StoredCredentials::from_secret(&secret) {
-        Ok(creds) => {
-            session::connect(
-                SessionCredentials::Stored(creds),
-                &session_options(&config, volume),
-            )
-            .await
-        }
+        Ok(creds) => session::connect(SessionCredentials::Stored(creds), &opts).await,
         Err(e) => Err(e),
     };
     match result {
@@ -261,12 +258,12 @@ async fn restore_session(
     config: Arc<Config>,
     secrets: Arc<dyn SecretStore>,
     store: Store,
-    volume: f32,
+    opts: SessionOptions,
 ) -> Result<Option<SessionReady>> {
     // Tokens of the old Web-API releases are useless now: remove them.
     let s = secrets.clone();
     let _ = blocking(move || s.delete(KEY_LEGACY_OAUTH)).await;
-    let Some(session) = connect_stored(config.clone(), secrets, volume).await? else {
+    let Some(session) = connect_stored(secrets, opts).await? else {
         return Ok(None);
     };
     let source = build_source(&config, &session, &store);
@@ -285,7 +282,7 @@ async fn login_flow(
     listener: std::net::TcpListener,
     state: String,
     verifier: crate::auth::secrets::Secret,
-    volume: f32,
+    opts: SessionOptions,
 ) -> Result<SessionReady> {
     let code = oauth::wait_for_callback(listener, state, LOGIN_TIMEOUT).await?;
     let http = http_client();
@@ -300,11 +297,8 @@ async fn login_flow(
     .await?;
     // The browser token is used once, to open the session; only the
     // session's reusable credentials are kept.
-    let (session, creds) = session::connect(
-        SessionCredentials::AccessToken(tokens.access_token),
-        &session_options(&config, volume),
-    )
-    .await?;
+    let (session, creds) =
+        session::connect(SessionCredentials::AccessToken(tokens.access_token), &opts).await?;
     save_credentials(secrets, creds).await?;
     let source = build_source(&config, &session, &store);
     let user = source.me().await.ok();
@@ -317,11 +311,10 @@ async fn login_flow(
 
 /// Reconnect after a lost session, with the stored credentials.
 async fn reconnect_session(
-    config: Arc<Config>,
     secrets: Arc<dyn SecretStore>,
-    volume: f32,
+    opts: SessionOptions,
 ) -> Result<SpotifySession> {
-    connect_stored(config, secrets, volume)
+    connect_stored(secrets, opts)
         .await?
         .ok_or_else(|| Error::revoked(crate::auth::SILENT_LOGIN_REJECTED))
 }
@@ -386,6 +379,7 @@ impl App {
             .and_then(|r| Route::from_key(&r))
             .unwrap_or(Route::Home);
 
+        let device_id = load_device_id(&store);
         let screenshot = opts.screenshot.clone();
         let mut app = Self {
             auth: AuthState::initial(),
@@ -426,6 +420,7 @@ impl App {
             lyrics: None,
             remote: None,
             has_stored_credentials: false,
+            device_id,
             hovered_row: None,
             selected_row: None,
             toast: toast.map(|t| (t, Instant::now())),
@@ -450,15 +445,34 @@ impl App {
             if let Some(plan) = app.screenshot.clone() {
                 tasks.push(app.prepare_screenshot(&plan));
             }
-        } else if let Err(e) = KeyringStore::check_available() {
-            app.auth = AuthState::SignedOut {
-                error: Some(e.user_message()),
-            };
         } else {
-            tasks.push(app.restore_task());
+            tasks.push(app.check_keyring_and_restore());
         }
         tasks.push(app.request_images());
         (app, Task::batch(tasks))
+    }
+
+    /// Fail early with setup guidance when no keyring is available,
+    /// otherwise try the silent login.
+    fn check_keyring_and_restore(&mut self) -> Task<Message> {
+        match KeyringStore::check_available() {
+            Err(e) => {
+                self.auth = self.auth.apply(AuthEvent::Failed(e));
+                Task::none()
+            }
+            Ok(()) => {
+                self.auth = AuthState::Restoring;
+                self.restore_task()
+            }
+        }
+    }
+
+    fn session_opts(&self) -> SessionOptions {
+        session_options(
+            &self.config,
+            self.playback.effective_volume(),
+            &self.device_id,
+        )
     }
 
     fn restore_task(&self) -> Task<Message> {
@@ -467,8 +481,8 @@ impl App {
             self.secrets.clone(),
             self.store.clone(),
         );
-        let volume = self.playback.effective_volume();
-        Task::perform(restore_session(config, secrets, store, volume), |r| {
+        let opts = self.session_opts();
+        Task::perform(restore_session(config, secrets, store, opts), |r| {
             Message::Done(Done::Restored(r))
         })
     }
@@ -597,9 +611,8 @@ impl App {
     }
 
     fn connect_audio_task(&self) -> Task<Message> {
-        let (config, secrets) = (self.config.clone(), self.secrets.clone());
-        let volume = self.playback.effective_volume();
-        Task::perform(reconnect_session(config, secrets, volume), |r| {
+        let (secrets, opts) = (self.secrets.clone(), self.session_opts());
+        Task::perform(reconnect_session(secrets, opts), |r| {
             Message::Done(Done::Audio(r))
         })
     }
@@ -652,7 +665,7 @@ impl App {
                 listener,
                 state,
                 pkce.verifier,
-                self.playback.effective_volume(),
+                self.session_opts(),
             ),
             |r| Message::Done(Done::LoggedIn(r)),
         )
@@ -1313,15 +1326,38 @@ impl App {
     }
 
     /// Spotify Connect: another device plays through us.
+    ///
+    /// Only a track change or playback start makes Connect the active
+    /// source; volume/position/pause events for an idle Connect device
+    /// (e.g. the phone changing our volume) must not hijack the local queue.
     fn on_remote(&mut self, ev: RemoteEvent) {
         let now = self.now;
-        let r = self.remote.get_or_insert_with(|| RemotePlayback {
-            track: None,
-            playback: Playback {
-                volume: self.playback.volume,
-                ..Playback::default()
-            },
-        });
+        if matches!(ev, RemoteEvent::Track(_) | RemoteEvent::Playing { .. })
+            && self.remote.is_none()
+        {
+            if self.playback.is_playing() {
+                // The engine paused the local player; mirror that here.
+                let pos = self.playback.position(now);
+                self.playback.report(PlayStatus::Paused, pos, now);
+            }
+            self.remote = Some(RemotePlayback {
+                track: None,
+                playback: Playback {
+                    volume: self.playback.volume,
+                    ..Playback::default()
+                },
+            });
+        }
+        if matches!(ev, RemoteEvent::Stopped) {
+            self.remote = None;
+            return;
+        }
+        let Some(r) = self.remote.as_mut() else {
+            if let RemoteEvent::Volume(v) = ev {
+                tracing::debug!(volume = v, "connect volume while idle");
+            }
+            return;
+        };
         match ev {
             RemoteEvent::Track(t) => {
                 r.playback.duration_ms = t.duration_ms;
@@ -1338,21 +1374,7 @@ impl App {
                 r.playback.report(st, position_ms, now);
             }
             RemoteEvent::Volume(v) => r.playback.volume = v.clamp(0.0, 1.0),
-            RemoteEvent::Stopped => {
-                self.remote = None;
-                return;
-            }
-        }
-        if self
-            .remote
-            .as_ref()
-            .is_some_and(|r| r.playback.status == PlayStatus::Playing && r.track.is_some())
-            && self.queue.current.is_some()
-            && self.playback.is_playing()
-        {
-            // The engine paused the local queue; mirror that here.
-            let pos = self.playback.position(now);
-            self.playback.report(PlayStatus::Paused, pos, now);
+            RemoteEvent::Stopped => {}
         }
     }
 
@@ -1753,6 +1775,7 @@ impl App {
                 Task::none()
             }
             Ui::Login => self.start_login(),
+            Ui::RetryKeyring => self.check_keyring_and_restore(),
             Ui::CancelLogin => {
                 if let Some(h) = self.login_abort.take() {
                     h.abort();
@@ -2093,6 +2116,7 @@ impl App {
     fn prepare_screenshot(&mut self, plan: &ScreenshotPlan) -> Task<Message> {
         // Pre-populate a playing queue so the now-playing bar has content.
         if plan.screen != "login"
+            && plan.screen != "keyring"
             && let Ok((pl, page)) = crate::mock::playlist("pl01")
         {
             self.queue.play_context(
@@ -2141,6 +2165,12 @@ impl App {
                 self.nav = Nav::new(Route::Home);
                 tasks.push(self.navigate(Route::Liked));
             }
+            "keyring" => {
+                self.auth = AuthState::KeyringUnavailable {
+                    detail: "no Secret Service / keyring is available".into(),
+                };
+                self.source = None;
+            }
             "lyrics" => {
                 self.show_lyrics = true;
                 self.nav = Nav::new(Route::Home);
@@ -2188,6 +2218,33 @@ impl App {
         );
         Task::batch(tasks)
     }
+}
+
+/// 40 lowercase hex characters, the form Spotify clients use.
+fn new_device_id() -> String {
+    let bytes: [u8; 20] = rand::random();
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The persisted device id, created on first use.
+fn load_device_id(store: &Store) -> String {
+    if let Some(id) = store
+        .setting("device_id")
+        .ok()
+        .flatten()
+        .filter(|d| is_device_id(d))
+    {
+        return id;
+    }
+    let id = new_device_id();
+    if let Err(e) = store.set_setting("device_id", &id) {
+        tracing::warn!(error = %e, "could not persist the device id");
+    }
+    id
+}
+
+fn is_device_id(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Track model for what the Connect device plays.
@@ -2525,5 +2582,33 @@ mod tests {
         assert!(app.has_stored_credentials);
         let _ = app.update(ui(Ui::Login));
         assert_eq!(app.auth, AuthState::Connecting, "no browser for a retry");
+    }
+
+    #[test]
+    fn connect_volume_while_idle_does_not_hijack_the_player() {
+        let (mut app, _rx, _) = real_app_playing();
+        for ev in [
+            RemoteEvent::Volume(0.3),
+            RemoteEvent::Position { position_ms: 9 },
+            RemoteEvent::Paused { position_ms: 9 },
+        ] {
+            let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::Remote(ev))));
+            assert!(app.remote.is_none());
+        }
+    }
+
+    #[test]
+    fn device_id_is_stable_across_boots() {
+        let store = Store::in_memory().unwrap();
+        let first = load_device_id(&store);
+        assert!(is_device_id(&first));
+        assert_eq!(load_device_id(&store), first, "reused, not regenerated");
+        store.set_setting("device_id", "garbage").unwrap();
+        assert_ne!(load_device_id(&store), "garbage");
+        let app = mock_app();
+        assert_eq!(
+            app.session_opts().device_id.as_deref(),
+            Some(app.device_id.as_str())
+        );
     }
 }

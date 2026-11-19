@@ -101,6 +101,27 @@ pub fn view(app: &App) -> El<'_> {
                 .push(pill("Copy login link", false, ui(Ui::CopyLoginUrl)))
                 .push(pill("Cancel", false, ui(Ui::CancelLogin)));
         }
+        AuthState::KeyringUnavailable { detail } => {
+            col = col
+                .push(label(
+                    "Ferrotune needs your system keyring",
+                    M.font_lg,
+                    Color::WHITE,
+                    FONT_BOLD,
+                ))
+                .push(para(
+                    "Your Spotify login is kept only in the keyring (Secret Service), never in a file. None is available right now.",
+                ))
+                .push(para(
+                    "KDE Plasma: open System Settings → KDE Wallet, enable the wallet subsystem, and make sure the wallet is open.",
+                ))
+                .push(para(
+                    "GNOME and others: install and start gnome-keyring (or another Secret Service provider) and unlock it.",
+                ))
+                .push(vspace(8.0))
+                .push(pill("Try again", true, ui(Ui::RetryKeyring)))
+                .push(secondary(format!("Details: {detail}"), M.font_sm));
+        }
         AuthState::SignedIn { .. } => {}
     }
 
