@@ -420,7 +420,7 @@ pub fn lyrics(_track_id: &str) -> Option<Lyrics> {
             .iter()
             .enumerate()
             .map(|(i, l)| LyricLine {
-                start_ms: (i as u32) * 4_000,
+                start_ms: (i as u32) * 14_000,
                 text: (*l).to_owned(),
             })
             .collect(),
