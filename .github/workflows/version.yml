@@ -51,13 +51,24 @@ jobs:
           kind=patch
           if [ "$BRANCH" = "main" ]; then
             head_ref=""
-            for attempt in 1 2 3; do
-              if head_ref=$(gh api "repos/$REPO/commits/$SHA/pulls" \
-                  --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].head.ref // ""'); then
-                break
-              fi
-              echo "PR lookup failed (attempt $attempt)"; head_ref=""; sleep $((attempt * 5))
+            # The commits/{sha}/pulls index is eventually consistent: right after a
+            # merge it can return an empty list (or a PR whose merged_at is still
+            # null). Retry on an empty result too, not only on API errors.
+            for attempt in 1 2 3 4 5; do
+              head_ref=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+                  --jq '[.[] | select(.base.ref == "main")][0].head.ref // ""' || true)
+              [ -n "$head_ref" ] && break
+              echo "PR lookup empty or failed (attempt $attempt)"; sleep $((attempt * 5))
             done
+            # Fallback: a merge commit whose second parent is on development is a
+            # development -> main release, whatever the API says.
+            if [ -z "$head_ref" ] && git rev-parse -q --verify "$SHA^2" >/dev/null; then
+              git fetch -q origin development
+              if git merge-base --is-ancestor "$SHA^2" origin/development; then
+                head_ref=development
+                echo "PR lookup gave nothing; second parent is on development"
+              fi
+            fi
             if [ "$head_ref" = "development" ]; then
               kind=minor
             fi
