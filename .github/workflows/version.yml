@@ -5,8 +5,9 @@ name: Version
 #                                  rebase), then sync the bump back to development
 # direct push to main           -> bump PATCH
 #
-# Bump commits start with `chore(release)` and are skipped by the guard below
-# (pushes made with GITHUB_TOKEN don't retrigger workflows anyway).
+# Bump commits start with `chore(release)` and are pushed by
+# github-actions[bot]; the job skips runs triggered by that actor (pushes made
+# with GITHUB_TOKEN don't retrigger workflows anyway).
 # Protected branches: allow `github-actions[bot]` to push to `main` and
 # `development` (ruleset bypass), or replace GITHUB_TOKEN with a bot token.
 on:
@@ -23,7 +24,10 @@ concurrency:
 
 jobs:
   bump:
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
+    # Guard on the actor, not the head commit message: a rebase or
+    # fast-forward development -> main merge can land with a bot
+    # `chore(release)` commit as head and must still bump MINOR.
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
