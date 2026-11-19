@@ -515,11 +515,12 @@ impl App {
                     }
                     return self.soloist_flush_pending();
                 }
-                if was_ready && self.soloist_playing_here_any() {
-                    if let Some(r) = self.remote.as_mut() {
-                        let pos = r.playback.position(self.now);
-                        r.playback.report(PlayStatus::Paused, pos, self.now);
-                    }
+                if was_ready
+                    && self.soloist_playing_here_any()
+                    && let Some(r) = self.remote.as_mut()
+                {
+                    let pos = r.playback.position(self.now);
+                    r.playback.report(PlayStatus::Paused, pos, self.now);
                 }
             }
             SoloistEvent::Build(b) => self.soloist.build = Some(b),
@@ -592,10 +593,8 @@ impl App {
                 ..
             } => {
                 self.soloist.logged_in = logged_in;
-                if logged_in {
-                    if let Some(h) = &self.soloist.handle {
-                        h.command(Command::GetState);
-                    }
+                if logged_in && let Some(h) = &self.soloist.handle {
+                    h.command(Command::GetState);
                 }
                 self.soloist_active(logged_in && is_active);
                 return;

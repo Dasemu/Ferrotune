@@ -50,9 +50,10 @@ because our listener is hardened (below) and it would pull in `oauth2` and `open
 | Account key | Content |
 |---|---|
 | `librespot` | JSON `{username, auth_data(base64)}`, librespot's reusable credentials |
+| `soloist-api-key` | the user's Spotify Soloist API key (§3c) |
 | `oauth` | legacy (Web-API releases); deleted on start and logout |
 
-Nothing else is persisted. The SQLite cache contains no credentials.
+Nothing else secret is persisted. The SQLite cache contains no credentials.
 
 ### Advanced: your own client id
 
@@ -333,6 +334,96 @@ device through connect-state.
   devices do not see what Ferrotune plays locally, and Ferrotune cannot
   control other devices (no device picker). `Spirc` does not expose the
   device list; it needs a direct connect-state client.
+
+## 3c. Spotify Soloist (`src/net/soloist/`, `src/app/soloist.rs`)
+
+[Spotify Soloist](https://developer.spotify.com/documentation/soloist) is
+Spotify's official headless Spotify Connect player. It does its own audio
+decryption, so it plays for accounts whose librespot audio keys are refused
+(§3, code 1). Ferrotune runs it as a child process and controls it; the
+librespot session stays for login, metadata, browse and the Connect
+controller.
+
+**Setup (one extra step the official app does not have).** Soloist needs a
+personal API key from the Spotify for Developers dashboard
+(`https://developer.spotify.com/dashboard/soloist`, Premium). The setup card
+opens that page and takes the pasted key. Keyring entry `soloist-api-key`;
+`config.json` only stores `"engine": "soloist"` and `"soloist_output"`.
+
+**Install.** `https://soloist-builds.spotifycdn.com/soloist_release_<arch>.tar.gz`
+(`x86_64`, `arm64`, `arm32`, `osx_arm64`; Windows ships a .zip and is not
+handled) is downloaded on first use into
+`$XDG_DATA_HOME/ferrotune/soloist/` (dir mode 0700): streamed to
+`download.part` (≤ 200 MB), then only the regular file `soloist` (top level
+or one directory deep; no links, no `..`) is extracted (≤ 256 MB binary,
+≤ 512 MB unpacked in total, header checksums verified) to `bin/soloist.new`,
+made `0755`, run with `--version` (10 s timeout), and renamed over
+`bin/soloist`. `build.json` keeps version, build time, ETag/Last-Modified and
+the last check. **Never bundled or redistributed**: Spotify's documentation
+forbids it, so each user's machine fetches it from Spotify.
+
+**Expiry and updates.** Builds expire 90 days after their build date; an
+expired build exits with code 10. The documentation names no version
+endpoint, only "download the build again and replace the executable", so
+Ferrotune asks the same URL with a conditional GET (`If-None-Match` /
+`If-Modified-Since`): `304` = nothing new. Checks run at start when due and
+hourly while running: daily, every 6 h in the last 14 days, always after
+expiry; **Update now** forces one; exit code 10 forces one and restarts. A
+build older than the installed one is never installed. The build date comes
+from `--version` (lenient parser: first dotted version, first ISO-8601 date
+or Unix timestamp); without one, the archive's `Last-Modified`.
+
+**Process.** `soloist --device-name "<Connect device name>" --data-dir
+<root>/data --cache-dir <cache>/soloist --ws 127.0.0.1:0 [--pipewire-device
+<node>] --api-key <key>`. The name is Ferrotune's Connect device name
+(Settings, default "Ferrotune on &lt;host&gt;"). Only `--api-key` is
+documented, which leaves the key visible in `/proc/<pid>/cmdline` to the same
+user; if a build's `--help` mentions `SOLOIST_API_KEY` as an environment
+variable, the key goes there instead. stdout/stderr are logged at debug level
+under target `soloist`, lines capped at 2 KB, with the key replaced by
+`[REDACTED]` (plus the global token scrubber). On Linux the child gets
+`PR_SET_PDEATHSIG(SIGTERM)`; quit sends SIGTERM (3 s grace, then SIGKILL).
+A `soloist.pid` left by a crashed run is stopped only if `/proc/<pid>/exe` is
+our binary. Crashes restart with backoff 1 s → 60 s (reset after 60 s up).
+Re-pair runs `--pair` (no `--ws`) and restarts the daemon when it exits.
+
+**WebSocket API.** Endpoint from `ws.addr` / `ws.port` in the data dir
+(loopback only, stale files removed before each start), frames ≤ 1 MB.
+Commands (`{"type":"command","command":…}`): `play` (+`uri`), `pause`,
+`skip_next`, `skip_prev`, `seek` (`position_ms`), `set_volume` (0–100),
+`set_shuffle`, `set_repeat_track`/`set_repeat_context` (the documented
+pairs), `add_to_queue` (tracks), `activate`, `get_state`. Events:
+`auth_state` (logged_in → Ready, else Needs pairing), `playback_state`,
+`track_changed`, `playback_changed`, `position_sync` (position extrapolated
+from `timestamp_ms` × `speed`), `volume_changed`, `options_changed`,
+`device_changed`, `queue_changed`, `command_result`, `error`. Unknown events
+and fields are ignored.
+
+**Routing.** With Soloist on, librespot runs no local player and announces
+no Connect device (one "Ferrotune" in every picker: Soloist). The Connect
+controller still needs a dealer connection id, so the session opens the
+dealer itself (`hm://pusher/v1/connections/`, no device registered). The
+Soloist device is the cluster device with our Connect name (until it shows
+up: a local placeholder id). `App::connect_task` sends every controller
+operation for it to `soloist_intercept`: transport, seek, volume, shuffle,
+repeat and transfer-without-id go over the WebSocket; a context started at
+a track (`skip_to`) or a transfer go through connect-state to the device id;
+without an id, `play` gets the track (or context) URI. While Soloist plays,
+the player bar and MPRIS follow its WebSocket events (cluster pushes for it
+are ignored while the WebSocket is up). Requests made before Soloist is
+ready wait and are sent when it is.
+
+**Pairing.** Soloist logs in only through Spotify Connect pairing on the
+local network (zeroconf). Ferrotune does **not** pair it itself: that would
+mean implementing the zeroconf `addUser` blob exchange with the session's
+credentials, which Spotify does not document for third parties. The card
+asks the user to pick the device once in the Spotify app on their phone and
+disappears when `auth_state.logged_in` turns true.
+
+**Unverified.** No real Soloist build or account was available: the
+WebSocket shapes follow the reference examples, `--version` output and
+`--help` are guessed, pairing and audio were never exercised, and the CDN's
+caching headers (ETag / Last-Modified) are assumed.
 
 ## 3b. Keyboard shortcuts, menus, dialogs
 

@@ -2,6 +2,21 @@
 
 Things learned while building Ferrotune. Add new entries at the top.
 
+- **When the key path is closed, use the official player.** Spotify Soloist
+  decrypts audio itself and is driven over a local WebSocket, so Ferrotune
+  stays a controller with one Connect device ("Ferrotune on <host>").
+  Two rules made it work: never bundle Spotify's binary (download it from
+  their CDN on the user's machine), and route by device id at one choke
+  point (`App::connect_task` → `soloist_intercept`) instead of sprinkling
+  "is Soloist?" checks over every transport handler.
+- **The dealer does not need Spirc.** The connect-state observer only needs
+  a dealer connection id; `dealer().listen_for("hm://pusher/v1/connections/")`
+  plus `dealer().start()` gives one without announcing a playable device.
+- **Undocumented output needs lenient parsers and a fallback.** Soloist's
+  `--version` layout is not documented: parse the first version number and
+  the first ISO date, and fall back to the archive's `Last-Modified` for the
+  90-day expiry.
+
 - **librespot hides why a track failed.** `PlayerEvent::Unavailable` has no
   reason; the cause is only in librespot's log. A tracing layer that reads
   librespot's own records (`net/audio_diag.rs`) turned "every song is
