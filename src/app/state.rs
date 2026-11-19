@@ -115,6 +115,58 @@ impl Nav {
     }
 }
 
+// -------------------------------------------------------- bounded entity map
+
+/// Detail views kept in memory (playlists, albums, artists). Older entries
+/// are evicted; they come back from SQLite or the network when reopened.
+pub const DETAIL_CACHE: usize = 64;
+
+/// A small LRU map with `HashMap`-like methods. `get` takes `&self` (for
+/// views) and does not touch recency; `insert` does.
+pub struct Bounded<V>(lru::LruCache<String, V>);
+
+impl<V> std::fmt::Debug for Bounded<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Bounded({} entries)", self.0.len())
+    }
+}
+
+impl<V> Bounded<V> {
+    pub fn new(cap: usize) -> Self {
+        Self(lru::LruCache::new(
+            std::num::NonZeroUsize::new(cap).unwrap_or(std::num::NonZeroUsize::MIN),
+        ))
+    }
+
+    pub fn get(&self, k: &str) -> Option<&V> {
+        self.0.peek(k)
+    }
+
+    pub fn get_mut(&mut self, k: &str) -> Option<&mut V> {
+        self.0.get_mut(k)
+    }
+
+    pub fn contains_key(&self, k: &str) -> bool {
+        self.0.contains(k)
+    }
+
+    pub fn insert(&mut self, k: String, v: V) {
+        self.0.push(k, v);
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 // --------------------------------------------------------------------- queue
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -824,6 +876,19 @@ mod tests {
         assert_eq!(q.jump_upcoming(2).unwrap().id, "t3");
         assert_eq!(ids(&q), vec!["t4"]);
         assert!(q.jump_upcoming(5).is_none());
+    }
+
+    #[test]
+    fn bounded_map_evicts_oldest() {
+        let mut m = Bounded::new(2);
+        m.insert("a".into(), 1);
+        m.insert("b".into(), 2);
+        m.insert("c".into(), 3);
+        assert_eq!(m.len(), 2);
+        assert!(!m.contains_key("a"));
+        assert_eq!(m.get("c"), Some(&3));
+        *m.get_mut("b").unwrap() = 20;
+        assert_eq!(m.get("b"), Some(&20));
     }
 
     #[test]

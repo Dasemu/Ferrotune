@@ -16,8 +16,8 @@ use iced::{Subscription, Task};
 
 pub use message::{Done, Message, Net, SessionReady, TrackSource, Ui, ui};
 use state::{
-    Connection, LibraryFilter, Nav, PlayContext, PlayStatus, Playback, Previous, Queue, Repeat,
-    Route, SearchFilter, backoff_delay,
+    Bounded, Connection, LibraryFilter, Nav, PlayContext, PlayStatus, Playback, Previous, Queue,
+    Repeat, Route, SearchFilter, backoff_delay,
 };
 
 use crate::auth::oauth::{self, TokenSet};
@@ -79,9 +79,9 @@ pub struct App {
     pub library: Library,
     pub library_filter: LibraryFilter,
     pub home: Option<HomeFeed>,
-    pub playlists: HashMap<String, (Playlist, TrackList)>,
-    pub albums: HashMap<String, Album>,
-    pub artists: HashMap<String, ArtistPage>,
+    pub playlists: Bounded<(Playlist, TrackList)>,
+    pub albums: Bounded<Album>,
+    pub artists: Bounded<ArtistPage>,
     pub liked: Option<TrackList>,
     pub liked_ids: HashSet<String>,
     pub loading: HashSet<Route>,
@@ -357,9 +357,9 @@ impl App {
             library,
             library_filter: LibraryFilter::All,
             home,
-            playlists: HashMap::new(),
-            albums: HashMap::new(),
-            artists: HashMap::new(),
+            playlists: Bounded::new(state::DETAIL_CACHE),
+            albums: Bounded::new(state::DETAIL_CACHE),
+            artists: Bounded::new(state::DETAIL_CACHE),
             liked: None,
             liked_ids: HashSet::new(),
             loading: HashSet::new(),
