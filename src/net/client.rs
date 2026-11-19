@@ -39,6 +39,11 @@ pub const MAX_INLINE_WAIT: Duration = Duration::from_secs(10);
 pub const MAX_ATTEMPTS: u32 = 3;
 /// Parallel requests in flight.
 pub const MAX_CONCURRENT: usize = 4;
+/// Upper bound for any server-requested wait (a hostile or broken
+/// `Retry-After` must not overflow `Instant` arithmetic or block for days).
+pub const MAX_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+/// Responses larger than this are never cached.
+pub const MAX_CACHED_BODY: usize = 2 * 1024 * 1024;
 
 /// What the session provides besides tokens.
 pub trait SessionAuth: TokenSource {
@@ -70,6 +75,8 @@ pub struct Request {
     pub accept: &'static str,
     /// Cache successful responses for this long (`None` = never cache).
     pub ttl: Option<Duration>,
+    /// Only cache a 2xx body this accepts (e.g. GraphQL without `errors`).
+    pub cache_if: Option<fn(&[u8]) -> bool>,
 }
 
 pub const PROTOBUF: &str = "application/x-protobuf";
@@ -85,6 +92,7 @@ impl Request {
             content_type: None,
             accept,
             ttl: None,
+            cache_if: None,
         }
     }
 
@@ -96,6 +104,7 @@ impl Request {
             content_type: Some(content_type),
             accept: content_type,
             ttl: None,
+            cache_if: None,
         }
     }
 
@@ -107,6 +116,28 @@ impl Request {
     pub fn ttl(mut self, ttl: Duration) -> Self {
         self.ttl = Some(ttl);
         self
+    }
+
+    pub fn cache_if(mut self, f: fn(&[u8]) -> bool) -> Self {
+        self.cache_if = Some(f);
+        self
+    }
+
+    /// Rate-limit scope: the first spclient path segment
+    /// (`collection`, `extended-metadata`, `playlist`, ...) or `pathfinder`,
+    /// so a 429 on search does not block library writes or metadata.
+    pub fn family(&self) -> String {
+        match &self.target {
+            Target::Spclient(p) => {
+                let seg = p
+                    .trim_start_matches('/')
+                    .split(['/', '?'])
+                    .next()
+                    .unwrap_or("");
+                format!("sp:{seg}")
+            }
+            Target::Pathfinder(_) => "pathfinder".into(),
+        }
     }
 
     /// Stable key for caching and coalescing (never contains secrets).
@@ -169,13 +200,15 @@ pub fn parse_retry_after(v: Option<&reqwest::header::HeaderValue>) -> Option<u64
         .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
-/// How long to wait before retry `attempt` (1-based) after a 429.
+/// How long to wait before retry `attempt` (1-based) after a 429, clamped
+/// to [`MAX_COOLDOWN`].
 pub fn rate_limit_wait(retry_after: Option<u64>, attempt: u32) -> Duration {
-    match retry_after {
+    let d = match retry_after {
         Some(s) => Duration::from_secs(s.max(1)),
         // No header: 1 s, 2 s, 4 s, ...
         None => Duration::from_secs(1u64 << attempt.saturating_sub(1).min(6)),
-    }
+    };
+    d.min(MAX_COOLDOWN)
 }
 
 type SharedResponse = Shared<BoxFuture<'static, Result<Vec<u8>>>>;
@@ -190,7 +223,7 @@ pub struct InternalClient {
     headers: ClientHeaders,
     inflight: Mutex<HashMap<String, SharedResponse>>,
     limiter: tokio::sync::Semaphore,
-    cooldown_until: Mutex<Option<Instant>>,
+    cooldown_until: Mutex<HashMap<String, Instant>>,
 }
 
 impl InternalClient {
@@ -211,7 +244,7 @@ impl InternalClient {
             headers: ClientHeaders::from_environment(),
             inflight: Mutex::new(HashMap::new()),
             limiter: tokio::sync::Semaphore::new(MAX_CONCURRENT),
-            cooldown_until: Mutex::new(None),
+            cooldown_until: Mutex::new(HashMap::new()),
         }
     }
 
@@ -232,6 +265,10 @@ impl InternalClient {
     }
 
     /// Send a request with caching, coalescing and retries.
+    ///
+    /// The network part runs in its own task: it always completes (and
+    /// releases its concurrency permit and in-flight entry) even if every
+    /// caller waiting for it is dropped.
     pub async fn send(self: &Arc<Self>, req: Request) -> Result<Vec<u8>> {
         let key = req.key();
         let cached = self.cache_lookup(&key, req.ttl).await;
@@ -248,14 +285,18 @@ impl InternalClient {
                 None => {
                     let this = self.clone();
                     let k = key.clone();
-                    let r = req.clone();
-                    let fut: BoxFuture<'static, Result<Vec<u8>>> = Box::pin(async move {
-                        let out = this.send_uncached(&r).await;
+                    let handle = tokio::spawn(async move {
+                        let out = this.send_uncached(&req).await;
+                        if let Ok(body) = &out {
+                            this.cache_store(&k, &req, body).await;
+                        }
                         if let Ok(mut m) = this.inflight.lock() {
                             m.remove(&k);
                         }
                         out
                     });
+                    let fut: BoxFuture<'static, Result<Vec<u8>>> =
+                        Box::pin(async move { handle.await.unwrap_or(Err(Error::Cancelled)) });
                     let s = fut.shared();
                     map.insert(key.clone(), s.clone());
                     s
@@ -263,15 +304,7 @@ impl InternalClient {
             }
         };
         match shared.await {
-            Ok(body) => {
-                if req.ttl.is_some()
-                    && let Some(store) = &self.cache
-                {
-                    let (k, b) = (key, body.clone());
-                    let _ = store.run(move |s| s.cache_put(&k, &b)).await;
-                }
-                Ok(body)
-            }
+            Ok(body) => Ok(body),
             // Serve stale data rather than an error when offline / limited.
             Err(e) if is_transient(&e) => match cached {
                 Some((body, _)) => {
@@ -284,6 +317,17 @@ impl InternalClient {
         }
     }
 
+    async fn cache_store(&self, key: &str, req: &Request, body: &[u8]) {
+        let (Some(store), Some(_)) = (&self.cache, req.ttl) else {
+            return;
+        };
+        if body.len() > MAX_CACHED_BODY || req.cache_if.is_some_and(|ok| !ok(body)) {
+            return;
+        }
+        let (k, b) = (key.to_owned(), body.to_vec());
+        let _ = store.run(move |s| s.cache_put(&k, &b)).await;
+    }
+
     async fn cache_lookup(&self, key: &str, ttl: Option<Duration>) -> Option<(Vec<u8>, bool)> {
         let (store, ttl) = (self.cache.as_ref()?, ttl?);
         let k = key.to_owned();
@@ -292,14 +336,17 @@ impl InternalClient {
         Some((body, fresh))
     }
 
-    fn cooldown_left(&self) -> Option<Duration> {
-        let until = (*self.cooldown_until.lock().ok()?)?;
+    fn cooldown_left(&self, family: &str) -> Option<Duration> {
+        let until = *self.cooldown_until.lock().ok()?.get(family)?;
         until.checked_duration_since(Instant::now())
     }
 
-    fn start_cooldown(&self, d: Duration) {
+    fn start_cooldown(&self, family: String, d: Duration) {
+        let now = Instant::now();
+        let until = now.checked_add(d.min(MAX_COOLDOWN)).unwrap_or(now);
         if let Ok(mut c) = self.cooldown_until.lock() {
-            *c = Some(Instant::now() + d);
+            c.retain(|_, t| *t > now);
+            c.insert(family, until);
         }
     }
 
@@ -318,7 +365,8 @@ impl InternalClient {
 
     async fn send_uncached(&self, req: &Request) -> Result<Vec<u8>> {
         let _permit = self.limiter.acquire().await.map_err(|_| Error::Cancelled)?;
-        if let Some(left) = self.cooldown_left() {
+        let family = req.family();
+        if let Some(left) = self.cooldown_left(&family) {
             return Err(Error::RateLimited(left.as_secs().max(1)));
         }
         let url = self.url(&req.target).await?;
@@ -374,7 +422,7 @@ impl InternalClient {
                         attempt,
                     );
                     if wait > MAX_INLINE_WAIT || attempt >= MAX_ATTEMPTS {
-                        self.start_cooldown(wait);
+                        self.start_cooldown(family, wait);
                         return Err(Error::RateLimited(wait.as_secs().max(1)));
                     }
                     tracing::info!(wait_s = wait.as_secs(), "rate limited; backing off");
@@ -431,6 +479,23 @@ mod tests {
         assert_eq!(rate_limit_wait(None, 2), Duration::from_secs(2));
         assert_eq!(rate_limit_wait(None, 3), Duration::from_secs(4));
         assert_eq!(rate_limit_wait(None, 99), Duration::from_secs(64));
+        // Absurd server values are clamped instead of overflowing.
+        assert_eq!(rate_limit_wait(Some(u64::MAX), 1), MAX_COOLDOWN);
+    }
+
+    #[test]
+    fn families_scope_rate_limits() {
+        let f = |p: &str| Request::get(Target::Spclient(p.into()), JSON).family();
+        assert_eq!(f("/collection/v2/paging"), "sp:collection");
+        assert_eq!(
+            f("/extended-metadata/v0/extended-metadata"),
+            "sp:extended-metadata"
+        );
+        assert_eq!(f("/searchview/km/v4/search/x?y=1"), "sp:searchview");
+        assert_eq!(
+            Request::get(Target::Pathfinder("/pathfinder/v1/query".into()), JSON).family(),
+            "pathfinder"
+        );
     }
 
     #[test]

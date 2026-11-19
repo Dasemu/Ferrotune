@@ -790,3 +790,132 @@ async fn home_falls_back_to_recently_played() {
         .collect();
     assert_eq!(names, ["Album 100", "Nova Harbor"]);
 }
+
+#[tokio::test]
+async fn absurd_retry_after_is_clamped_not_a_panic() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/playlist/v2/playlist/"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "99999999999999999"))
+        .mount(&e.server)
+        .await;
+    let r = e.backend.catalog.playlist(&id(50)).await;
+    let max = ferrotune::net::client::MAX_COOLDOWN.as_secs();
+    assert_eq!(r.unwrap_err(), Error::RateLimited(max));
+}
+
+#[tokio::test]
+async fn cooldown_is_scoped_to_the_endpoint_family() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path("/pathfinder/v1/query"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "300"))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/searchview/"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "300"))
+        .mount(&e.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/collection/v2/write"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+    // Search is limited (pathfinder and its fallback)...
+    assert!(matches!(
+        e.backend.search.search("x").await,
+        Err(Error::RateLimited(_))
+    ));
+    assert!(matches!(
+        e.backend.search.search("y").await,
+        Err(Error::RateLimited(_))
+    ));
+    // ...but library writes still go through.
+    Mock::given(method("POST"))
+        .and(path("/collection/v2/paging"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(collection_page(&[], "", "s")))
+        .mount(&e.server)
+        .await;
+    e.backend
+        .library
+        .set_saved(vec![id(3)], true)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn dropped_callers_do_not_wedge_the_client() {
+    let e = env().await;
+    mount_metadata(&e.server).await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/playlist/v2/playlist/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(playlist_content(&[uri("track", 1)], "Mix", 1))
+                .set_delay(Duration::from_millis(400)),
+        )
+        .mount(&e.server)
+        .await;
+    // More dropped in-flight callers than concurrency permits.
+    for n in 0..8u8 {
+        let b = e.backend.clone();
+        let pid = id(60 + n);
+        let _ = tokio::time::timeout(Duration::from_millis(50), async move {
+            b.catalog.playlist(&pid).await
+        })
+        .await;
+    }
+    let r =
+        tokio::time::timeout(Duration::from_secs(10), e.backend.catalog.playlist(&id(90))).await;
+    assert!(matches!(r, Ok(Ok(_))), "client is still usable: {r:?}");
+}
+
+#[tokio::test]
+async fn graphql_errors_are_not_cached_and_403_falls_back() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path("/pathfinder/v1/query"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(fixture("pathfinder_rejected.json")),
+        )
+        .up_to_n_times(1)
+        .mount(&e.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/pathfinder/v1/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("pathfinder_search.json")))
+        .mount(&e.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/searchview/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("searchview.json")))
+        .mount(&e.server)
+        .await;
+    // First answer is an error body: fallback is used, nothing cached...
+    let first = e.backend.search.search("harbor").await.unwrap();
+    assert_eq!(first.artists.len(), 0, "searchview fixture has no artists");
+    // ...so the second call asks pathfinder again and gets real results.
+    let second = e.backend.search.search("harbor").await.unwrap();
+    assert_eq!(second.artists.len(), 1);
+
+    // HTTP 403 from pathfinder also falls back.
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path("/pathfinder/v1/query"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&e.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/searchview/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("searchview.json")))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+    assert_eq!(
+        e.backend.search.search("harbor").await.unwrap().tracks[0].name,
+        "Harbor Lights"
+    );
+}
