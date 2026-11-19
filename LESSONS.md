@@ -2,6 +2,20 @@
 
 Things learned while building Ferrotune. Add new entries at the top.
 
+- **Dead librespot sessions are silent.** After suspend/resume or a network
+  drop every `load` came back `Unavailable` and the app skipped the whole
+  queue. The engine now polls `Session::is_invalid()` / `Player::is_invalid()`
+  and emits `SessionLost`; the app pauses, reconnects with backoff and
+  reloads the track on play.
+- **Refresh after 401 must be single-flight.** Parallel requests that all
+  got a 401 each refreshed (and may rotate the refresh token). Compare with
+  the token the request used before refreshing.
+- **Loopback login listener:** bind before opening the browser, and ignore
+  (400) anything without our `state` instead of aborting.
+- **Release workflow:** detect dev→main via the commit's associated PRs
+  (works for squash/rebase), guard on the bot actor rather than the commit
+  message, and sync the MINOR bump back to development.
+
 - **Paging must count raw entries.** Playlists contain episodes, removed
   tracks (`"track": null`) and local files. Filtering them before computing
   the next offset re-fetched overlapping pages; `Page::raw_len` fixes it.

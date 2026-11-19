@@ -67,13 +67,18 @@ Robustness rules (all covered by `tests/webapi.rs`):
 - **Lenient parsing:** list entries are parsed individually; unknown or
   malformed entries are dropped. Playlist entries accept both `track` and
   the newer `item` field name.
-- **401** → refresh once and retry; second 401 → revoked.
+- **401** → refresh once and retry; second 401 → revoked. Refresh is
+  single-flight: a request whose token was already replaced reuses the new one.
 - **429** → `Retry-After` ≤ 5 s is slept inline (max 3 tries), otherwise
   `Error::RateLimited(secs)` is shown.
 - **5xx** → one retry after 300 ms.
 - Body-less `PUT`/`DELETE` send `Content-Length: 0` (Spotify answers 411
   otherwise).
 - reqwest errors are stripped of their URL before they can be logged.
+
+Playlist entries are read from `/playlists/{id}/tracks`; on 403/404 the
+client retries `/playlists/{id}/items` and otherwise shows an explicit
+"endpoint unavailable for this app" error.
 
 Spotify has restricted several endpoints for newly created apps over time
 (recommendations, featured playlists, related artists, browse categories).
@@ -101,6 +106,10 @@ top tracks degrade to an empty list if refused.
   (`app/state.rs::Queue`); librespot only plays single tracks. Gapless
   preloading is not wired up yet.
 - Audio session failures retry with exponential backoff (1 s → 60 s).
+- A dead session (`Session::is_invalid()`, `Player::is_invalid()` or a closed
+  player channel, checked every 2 s) emits `SessionLost`: the app pauses at
+  the current position, reconnects, and reloads the track on play instead
+  of skipping "unavailable" tracks.
 - `--mock` uses `MockEngine`, a simulated clock with the same events.
 
 ## 4. MPRIS (`src/net/mpris.rs`, Linux only)
@@ -113,7 +122,10 @@ Bus name `org.mpris.MediaPlayer2.ferrotune`, object `/org/mpris/MediaPlayer2`,
 - The app pushes a `MediaSnapshot` after every update; the server diffs it
   against the previous one and emits `PropertiesChanged` for
   `PlaybackStatus, Metadata, Volume, Shuffle, LoopStatus, CanGoNext,
-  CanGoPrevious`, plus `Seeked` when the position jumps.
+  CanGoPrevious`, plus `Seeked` on every user seek (`seek_seq`) or large
+  position jump. `Position` is extrapolated on read while playing.
+- Metadata strings are sent as plain text, as the MPRIS spec requires (no
+  markup escaping). Ferrotune sends no desktop notifications.
 - Track ids: `/dev/ferro/ferrotune/track/<base62 id>`. `mpris:artUrl` is the
   300 px `i.scdn.co` image.
 - Methods `Play, Pause, PlayPause, Stop, Next, Previous, Seek, SetPosition`
