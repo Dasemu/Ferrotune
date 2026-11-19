@@ -243,6 +243,31 @@ impl Store {
         })
     }
 
+    /// Bytes used by cached entities and HTTP responses.
+    pub fn cache_bytes(&self) -> Result<u64> {
+        self.with(|c| {
+            let n: i64 = c.query_row(
+                "SELECT COALESCE((SELECT SUM(length(json)) FROM entity), 0)
+                      + COALESCE((SELECT SUM(length(body)) FROM http_cache), 0)",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(u64::try_from(n).unwrap_or(0))
+        })
+    }
+
+    /// "Clear cache" (Settings): drop cached entities and responses but keep
+    /// settings, the device id and the collection sync state.
+    pub fn clear_cache(&self) -> Result<()> {
+        self.with(|c| {
+            c.execute_batch("DELETE FROM entity; DELETE FROM http_cache;")?;
+            Ok(())
+        })?;
+        // Give the space back (best effort; never fatal).
+        let _ = self.with(|c| Ok(c.execute_batch("VACUUM;")?));
+        Ok(())
+    }
+
     /// Remove all cached user data (logout).
     pub fn clear(&self) -> Result<()> {
         self.with(|c| {
@@ -406,5 +431,18 @@ mod tests {
         s.run(|s| s.set_setting("a", "b")).await.unwrap();
         let v = s.run(|s| s.setting("a")).await.unwrap();
         assert_eq!(v.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn clear_cache_keeps_settings() {
+        let s = Store::in_memory().unwrap();
+        s.set_setting("device_id", "abc").unwrap();
+        s.put(Kind::Library, "me", &vec![1, 2, 3]).unwrap();
+        s.cache_put("k", &[0u8; 100]).unwrap();
+        assert!(s.cache_bytes().unwrap() >= 100);
+        s.clear_cache().unwrap();
+        assert_eq!(s.cache_bytes().unwrap(), 0);
+        assert_eq!(s.setting("device_id").unwrap().as_deref(), Some("abc"));
+        assert_eq!(s.get::<Vec<i32>>(Kind::Library, "me").unwrap(), None);
     }
 }

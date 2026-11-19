@@ -20,6 +20,9 @@ pub enum Route {
     Playlist(String),
     Album(String),
     Artist(String),
+    /// A user's profile page (username).
+    Profile(String),
+    Settings,
 }
 
 impl Route {
@@ -32,6 +35,8 @@ impl Route {
             Self::Playlist(id) => format!("playlist:{id}"),
             Self::Album(id) => format!("album:{id}"),
             Self::Artist(id) => format!("artist:{id}"),
+            Self::Profile(u) => format!("user:{u}"),
+            Self::Settings => "settings".into(),
         }
     }
 
@@ -42,11 +47,13 @@ impl Route {
                 "search" => Self::Search,
                 "library" => Self::Library,
                 "liked" => Self::Liked,
+                "settings" => Self::Settings,
                 _ => return None,
             },
             Some(("playlist", id)) => Self::Playlist(id.into()),
             Some(("album", id)) => Self::Album(id.into()),
             Some(("artist", id)) => Self::Artist(id.into()),
+            Some(("user", u)) => Self::Profile(u.into()),
             Some(_) => return None,
         })
     }
@@ -156,6 +163,10 @@ impl<V> Bounded<V> {
 
     pub fn remove(&mut self, k: &str) -> Option<V> {
         self.0.pop(k)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.0.iter().map(|(_, v)| v)
     }
 
     pub fn clear(&mut self) {
@@ -628,6 +639,90 @@ pub fn backoff_delay(attempt: u32, jitter: f64) -> Duration {
     Duration::from_millis((base * factor).min(60_000.0) as u64)
 }
 
+// ------------------------------------------------------- unavailable tracks
+
+use crate::net::audio_diag::UnavailableReason;
+
+/// What to do when librespot reports the current track unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnavailableAction {
+    /// Load the same track once more (temporary key refusal).
+    Retry,
+    /// Skip to the next track and say so.
+    Skip,
+    /// Stop and show one persistent banner.
+    Stop(UnavailableReason),
+}
+
+/// Never skip through the whole queue: at most [`SkipGuard::MAX_SKIPS`]
+/// consecutive unavailable tracks are skipped, and an audio-key refusal
+/// (which affects every track) stops at once.
+#[derive(Debug, Clone, Default)]
+pub struct SkipGuard {
+    streak: u32,
+    retried: Option<String>,
+}
+
+impl SkipGuard {
+    pub const MAX_SKIPS: u32 = 3;
+
+    pub fn on_unavailable(&mut self, uri: &str, reason: UnavailableReason) -> UnavailableAction {
+        match reason {
+            UnavailableReason::AudioKeyTransient { .. } if self.retried.as_deref() != Some(uri) => {
+                self.retried = Some(uri.to_owned());
+                return UnavailableAction::Retry;
+            }
+            UnavailableReason::AudioKeyDenied { .. } => {
+                self.streak = 0;
+                return UnavailableAction::Stop(reason);
+            }
+            _ => {}
+        }
+        self.streak = self.streak.saturating_add(1);
+        if self.streak > Self::MAX_SKIPS {
+            self.streak = 0;
+            UnavailableAction::Stop(reason)
+        } else {
+            UnavailableAction::Skip
+        }
+    }
+
+    /// A track started: the streak is over.
+    pub fn on_playing(&mut self) {
+        self.streak = 0;
+        self.retried = None;
+    }
+
+    /// The user started something new.
+    pub fn reset(&mut self) {
+        self.on_playing();
+    }
+
+    pub fn streak(&self) -> u32 {
+        self.streak
+    }
+}
+
+/// Show `msg` as the toast (visible for `visible`). An identical toast that
+/// is still on screen is left alone, so a burst of identical events never
+/// restarts or flickers it; it is only extended when about to expire.
+pub fn next_toast(
+    current: Option<&(String, Instant)>,
+    msg: String,
+    now: Instant,
+    visible: Duration,
+) -> (String, Instant) {
+    if let Some((m, at)) = current
+        && *m == msg
+    {
+        let age = now.saturating_duration_since(*at);
+        if age + Duration::from_secs(1) < visible {
+            return (msg, *at);
+        }
+    }
+    (msg, now)
+}
+
 // -------------------------------------------------------------------- filters
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1018,5 +1113,54 @@ mod tests {
         assert_eq!(format_count(1_234_567), "1,234,567");
         assert_eq!(format_count(999), "999");
         assert_eq!(Repeat::parse(Repeat::Track.as_str()), Repeat::Track);
+    }
+
+    #[test]
+    fn skip_guard_stops_after_three_and_on_key_denial() {
+        use crate::net::audio_diag::UnavailableReason as R;
+        let mut g = SkipGuard::default();
+        for i in 0..SkipGuard::MAX_SKIPS {
+            assert_eq!(
+                g.on_unavailable(&format!("t{i}"), R::Unknown),
+                UnavailableAction::Skip
+            );
+        }
+        assert_eq!(
+            g.on_unavailable("t9", R::Restricted),
+            UnavailableAction::Stop(R::Restricted)
+        );
+        // A track that plays resets the streak.
+        g.on_unavailable("a", R::Unknown);
+        g.on_playing();
+        assert_eq!(g.streak(), 0);
+        // Key denial: stop at the first track, no skipping at all.
+        let denied = R::AudioKeyDenied { code: 1 };
+        assert_eq!(
+            g.on_unavailable("a", denied),
+            UnavailableAction::Stop(denied)
+        );
+        // Transient refusal: one retry of the same track, then skip.
+        let tr = R::AudioKeyTransient { code: 2 };
+        assert_eq!(g.on_unavailable("b", tr), UnavailableAction::Retry);
+        assert_eq!(g.on_unavailable("b", tr), UnavailableAction::Skip);
+        assert_eq!(g.on_unavailable("c", tr), UnavailableAction::Retry);
+    }
+
+    #[test]
+    fn identical_toasts_do_not_restart() {
+        let t0 = Instant::now();
+        let vis = Duration::from_secs(5);
+        let first = next_toast(None, "x".into(), t0, vis);
+        let again = next_toast(Some(&first), "x".into(), t0 + Duration::from_secs(1), vis);
+        assert_eq!(again.1, t0, "same toast keeps its timer: no flicker");
+        let late = next_toast(
+            Some(&first),
+            "x".into(),
+            t0 + Duration::from_millis(4500),
+            vis,
+        );
+        assert!(late.1 > t0, "extended when about to expire");
+        let other = next_toast(Some(&first), "y".into(), t0 + Duration::from_secs(1), vis);
+        assert_eq!(other.0, "y");
     }
 }

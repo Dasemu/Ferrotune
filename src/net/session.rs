@@ -86,6 +86,7 @@ impl SessionCredentials {
 pub struct ConnectOptions {
     pub name: String,
     pub bitrate: super::playback::BitrateKey,
+    pub normalisation: bool,
     /// 0.0..=1.0
     pub initial_volume: f32,
 }
@@ -95,6 +96,8 @@ pub struct SessionOptions {
     pub client_id: String,
     /// Stable device id (persisted by the app); `None` = random per session.
     pub device_id: Option<String>,
+    /// Connect autoplay (continue with similar songs when a context ends).
+    pub autoplay: bool,
     pub connect: Option<ConnectOptions>,
 }
 
@@ -223,7 +226,7 @@ async fn start_connect(
     let backend = audio_backend::find(None)
         .ok_or_else(|| librespot_core::Error::unavailable("no audio backend"))?;
     let player = Player::new(
-        super::playback::player_config(opts.bitrate),
+        super::playback::player_config(opts.bitrate, opts.normalisation),
         session.clone(),
         mixer.get_soft_volume(),
         move || backend(None, AudioFormat::default()),
@@ -253,6 +256,7 @@ pub async fn connect(
     let credentials = creds.into_librespot()?;
     let mut config = librespot_core::SessionConfig {
         client_id: opts.client_id.clone(),
+        autoplay: Some(opts.autoplay),
         ..librespot_core::SessionConfig::default()
     };
     if let Some(id) = &opts.device_id {

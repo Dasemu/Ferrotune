@@ -39,13 +39,10 @@ pub fn view(app: &App) -> El<'_> {
     let mut cards = Vec::new();
     if matches!(f, LibraryFilter::All | LibraryFilter::Playlists) {
         for p in &lib.playlists {
-            cards.push(card(
+            cards.push(super::widgets::playlist_card(
                 app,
-                &p.images,
-                &p.name,
-                format!("Playlist • {}", p.owner),
-                false,
-                Icon::Music,
+                p,
+                format!("Playlist • {}", app.owner_label(&p.owner)),
                 ui(Ui::Navigate(Route::Playlist(p.id.clone()))),
                 Some(app.playlist_target(p)),
             ));

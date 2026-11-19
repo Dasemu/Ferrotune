@@ -253,10 +253,23 @@ pub fn init(log_path: Option<&Path>) {
         sink: None,
         stderr: true,
     };
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    let fmt = tracing_subscriber::fmt::layer()
         .with_writer(writer)
         .with_ansi(false)
+        .with_filter(filter);
+    // Sees librespot's warnings/errors whatever RUST_LOG says, so the app
+    // can tell *why* a track was unavailable (net::audio_diag).
+    let diag = crate::net::audio_diag::DiagLayer.with_filter(
+        tracing_subscriber::filter::Targets::new()
+            .with_target("librespot_core::audio_key", tracing::Level::ERROR)
+            .with_target("librespot_playback", tracing::Level::WARN),
+    );
+    let _ = tracing_subscriber::registry()
+        .with(fmt)
+        .with(diag)
         .try_init();
 }
 

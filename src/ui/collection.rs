@@ -92,7 +92,15 @@ pub fn playlist<'a>(app: &'a App, id: &'a str) -> El<'a> {
     };
     let tint = tint_for(app, &pl.images);
     let meta = meta_line(vec![
-        semibold(pl.owner.as_str(), M.font_sm).into(),
+        iced::widget::button(semibold(app.owner_label(&pl.owner), M.font_sm))
+            .padding(0)
+            .style(theme::link(false))
+            .on_press_maybe(crate::app::meta::looks_like_username(&pl.owner).then(|| {
+                ui(Ui::Navigate(Route::Profile(
+                    crate::app::playlists::owner_username(&pl.owner),
+                )))
+            }))
+            .into(),
         secondary(
             format!(
                 "{} songs, {}",
@@ -112,7 +120,7 @@ pub fn playlist<'a>(app: &'a App, id: &'a str) -> El<'a> {
     column![
         header(
             tint,
-            art(app, &pl.images, M.art_header, false, Icon::Music),
+            super::widgets::playlist_art(app, pl, M.art_header),
             "Playlist",
             pl.name.clone(),
             Some(pl.description.clone()),
