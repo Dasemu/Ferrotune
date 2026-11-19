@@ -1611,6 +1611,7 @@ impl App {
                 | Ui::CloseOverlay
                 | Ui::Tick(_)
                 | Ui::HoverRow(_)
+                | Ui::Scrolled(_)
                 | Ui::WindowResized(_)
         ) {
             self.menu = None;
@@ -2359,6 +2360,30 @@ impl App {
                     self.on_remote(RemoteEvent::Playing {
                         position_ms: 41_000,
                     });
+                }
+            }
+            "menu" | "shortcuts" | "rename" => {
+                self.nav = Nav::new(Route::Home);
+                tasks.push(self.navigate(Route::Playlist("pl01".into())));
+                match plan.screen.as_str() {
+                    "menu" => {
+                        if let Ok((_, page)) = crate::mock::playlist("pl01")
+                            && let Some(t) = page.items.get(2)
+                        {
+                            self.menu = Some(menu::ContextMenu {
+                                target: menu::MenuTarget::track(t, Some(("pl01".into(), 2))),
+                                at: iced::Point::new(620.0, 330.0),
+                                picker: true,
+                            });
+                        }
+                    }
+                    "shortcuts" => self.dialog = Some(menu::Dialog::Shortcuts),
+                    _ => {
+                        self.dialog = Some(menu::Dialog::Rename {
+                            id: "pl01".into(),
+                            name: "Late Night Drive".into(),
+                        })
+                    }
                 }
             }
             "queue" => {

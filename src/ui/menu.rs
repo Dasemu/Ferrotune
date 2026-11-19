@@ -33,13 +33,15 @@ pub fn click_menu<'a>(content: impl Into<El<'a>>, target: MenuTarget) -> El<'a> 
 }
 
 fn item<'a>(text: impl Into<String>, msg: Message) -> El<'a> {
-    button(label(text.into(), M.font_md, pal().text_primary, FONT))
-        .padding(Padding::from([0, 12]))
-        .height(MENU_ROW)
-        .width(Length::Fill)
-        .style(theme::menu_item)
-        .on_press(msg)
-        .into()
+    button(
+        container(label(text.into(), M.font_md, pal().text_primary, FONT)).center_y(Length::Fill),
+    )
+    .padding(Padding::from([0, 12]))
+    .height(MENU_ROW)
+    .width(Length::Fill)
+    .style(theme::menu_item)
+    .on_press(msg)
+    .into()
 }
 
 fn separator<'a>() -> El<'a> {
@@ -83,12 +85,15 @@ fn context_menu<'a>(app: &'a App, m: &'a ContextMenu) -> El<'a> {
                 };
                 col = col.push(
                     button(
-                        row![
-                            label_text("Add to playlist"),
-                            fill(),
-                            icon(arrow, 16.0, pal().text_secondary)
-                        ]
-                        .align_y(Alignment::Center),
+                        container(
+                            row![
+                                label_text("Add to playlist"),
+                                fill(),
+                                icon(arrow, 16.0, pal().text_secondary)
+                            ]
+                            .align_y(Alignment::Center),
+                        )
+                        .center_y(Length::Fill),
                     )
                     .padding(Padding::from([0, 12]))
                     .height(MENU_ROW)
@@ -117,7 +122,9 @@ fn context_menu<'a>(app: &'a App, m: &'a ContextMenu) -> El<'a> {
         });
     let backdrop = mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
         .on_press(ui(Ui::CloseOverlay))
-        .on_right_press(ui(Ui::CloseOverlay));
+        .on_right_press(ui(Ui::CloseOverlay))
+        // Swallow the wheel so the page does not scroll under an open menu.
+        .on_scroll(|_| Message::Done(Done::Noop));
     stack![backdrop, positioned].into()
 }
 
@@ -139,16 +146,19 @@ fn picker<'a>(app: &'a App, target: &MenuTarget) -> El<'a> {
     let mut col = column![].spacing(0);
     for p in lists {
         col = col.push(
-            button(label(p.name.as_str(), M.font_md, pal().text_primary, FONT))
-                .padding(Padding {
-                    left: 24.0,
-                    right: 12.0,
-                    ..Padding::ZERO
-                })
-                .height(MENU_ROW)
-                .width(Length::Fill)
-                .style(theme::menu_item)
-                .on_press(ui(Ui::AddToPlaylist(p.id.clone(), track.clone()))),
+            button(
+                container(label(p.name.as_str(), M.font_md, pal().text_primary, FONT))
+                    .center_y(Length::Fill),
+            )
+            .padding(Padding {
+                left: 24.0,
+                right: 12.0,
+                ..Padding::ZERO
+            })
+            .height(MENU_ROW)
+            .width(Length::Fill)
+            .style(theme::menu_item)
+            .on_press(ui(Ui::AddToPlaylist(p.id.clone(), track.clone()))),
         );
     }
     scrollable(col)
