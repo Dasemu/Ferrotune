@@ -107,6 +107,8 @@ pub struct App {
     audio_attempt: u32,
     /// The engine lost the loaded track (session died): reload on play.
     reload_on_play: bool,
+    /// Bumped on every seek so MPRIS emits `Seeked`.
+    seek_seq: u64,
     screenshot: Option<ScreenshotPlan>,
     started: Instant,
     pub first_frame_logged: Cell<bool>,
@@ -380,6 +382,7 @@ impl App {
             loading_more: false,
             audio_attempt: 0,
             reload_on_play: false,
+            seek_seq: 0,
             screenshot,
             started: opts.started.unwrap_or_else(Instant::now),
             first_frame_logged: Cell::new(false),
@@ -1264,8 +1267,9 @@ impl App {
                 MediaCommand::Next => self.update_ui(Ui::Next),
                 MediaCommand::Previous => self.update_ui(Ui::Previous),
                 MediaCommand::Seek(offset_us) => {
-                    let pos = i64::from(self.playback.position(self.now)) + offset_us / 1000;
-                    self.seek_to(pos.max(0) as u32);
+                    let pos = i64::from(self.playback.position(self.now))
+                        .saturating_add(offset_us / 1000);
+                    self.seek_to(crate::net::mpris::clamp_ms(pos));
                     Task::none()
                 }
                 MediaCommand::SetPosition {
@@ -1278,7 +1282,7 @@ impl App {
                         .as_ref()
                         .is_some_and(|t| crate::net::mpris::track_path(&t.id).ends_with(&track_id))
                     {
-                        self.seek_to((position_us / 1000).max(0) as u32);
+                        self.seek_to(crate::net::mpris::clamp_ms(position_us / 1000));
                     }
                     Task::none()
                 }
@@ -1341,6 +1345,7 @@ impl App {
             position_ms: self.playback.position(self.now),
             volume: f64::from(self.playback.effective_volume()),
             shuffle: self.queue.shuffle,
+            seek_seq: self.seek_seq,
             loop_status: match self.queue.repeat {
                 Repeat::Off => MediaLoop::None,
                 Repeat::Context => MediaLoop::Playlist,
@@ -1351,6 +1356,7 @@ impl App {
 
     fn seek_to(&mut self, ms: u32) {
         let ms = ms.min(self.playback.duration_ms);
+        self.seek_seq = self.seek_seq.wrapping_add(1);
         self.engine_send(PlaybackCommand::Seek(ms));
         let status = self.playback.status;
         self.playback.report(status, ms, self.now);

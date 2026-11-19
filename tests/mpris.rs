@@ -58,6 +58,7 @@ async fn mpris_exposes_state_and_forwards_commands() {
             loop_status: MediaLoop::Playlist,
             can_next: true,
             can_previous: true,
+            seek_seq: 0,
         })
         .unwrap();
 

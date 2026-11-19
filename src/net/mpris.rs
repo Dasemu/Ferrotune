@@ -50,6 +50,26 @@ pub struct MediaSnapshot {
     pub loop_status: MediaLoop,
     pub can_next: bool,
     pub can_previous: bool,
+    /// Incremented by the app on every user seek; a change emits `Seeked`.
+    pub seek_seq: u64,
+}
+
+/// Position a client should see `elapsed_ms` after the snapshot was taken.
+pub fn extrapolate(s: &MediaSnapshot, elapsed_ms: u64) -> u32 {
+    if s.status != MediaStatus::Playing {
+        return s.position_ms;
+    }
+    let p = u64::from(s.position_ms).saturating_add(elapsed_ms);
+    let cap = s
+        .track
+        .as_ref()
+        .map_or(u64::from(u32::MAX), |t| u64::from(t.length_ms));
+    p.min(cap).min(u64::from(u32::MAX)) as u32
+}
+
+/// Clamp a possibly negative / huge millisecond value into `u32`.
+pub fn clamp_ms(ms: i64) -> u32 {
+    ms.clamp(0, i64::from(u32::MAX)) as u32
 }
 
 /// Requests coming from MPRIS clients.
@@ -221,6 +241,10 @@ mod linux {
         if old.track != new.track {
             return false;
         }
+        // Any explicit user seek, however small.
+        if old.seek_seq != new.seek_seq {
+            return true;
+        }
         let expected = if old.status == MediaStatus::Playing {
             u64::from(old.position_ms) + elapsed_ms
         } else {
@@ -230,13 +254,13 @@ mod linux {
     }
 
     pub struct FerroMpris {
-        state: Arc<Mutex<MediaSnapshot>>,
+        state: Arc<Mutex<(MediaSnapshot, std::time::Instant)>>,
         cmd: mpsc::UnboundedSender<MediaCommand>,
     }
 
     impl FerroMpris {
         fn snap(&self) -> MediaSnapshot {
-            self.state.lock().map(|s| s.clone()).unwrap_or_default()
+            self.state.lock().map(|s| s.0.clone()).unwrap_or_default()
         }
 
         fn send(&self, c: MediaCommand) -> fdo::Result<()> {
@@ -356,7 +380,14 @@ mod linux {
                 .map_err(|_| zbus::Error::Failure("player is shutting down".into()))
         }
         async fn position(&self) -> fdo::Result<Time> {
-            Ok(Time::from_millis(i64::from(self.snap().position_ms)))
+            // Extrapolate while playing so clients polling Position move.
+            let (snap, at) = self
+                .state
+                .lock()
+                .map(|s| (s.0.clone(), s.1))
+                .unwrap_or_else(|_| (MediaSnapshot::default(), std::time::Instant::now()));
+            let ms = extrapolate(&snap, at.elapsed().as_millis() as u64);
+            Ok(Time::from_millis(i64::from(ms)))
         }
         async fn minimum_rate(&self) -> fdo::Result<PlaybackRate> {
             Ok(1.0)
@@ -391,7 +422,10 @@ mod linux {
         mut updates: mpsc::UnboundedReceiver<MediaSnapshot>,
         commands: mpsc::UnboundedSender<MediaCommand>,
     ) -> zbus::Result<()> {
-        let state = Arc::new(Mutex::new(MediaSnapshot::default()));
+        let state = Arc::new(Mutex::new((
+            MediaSnapshot::default(),
+            std::time::Instant::now(),
+        )));
         let server = Server::new(
             bus_suffix,
             FerroMpris {
@@ -407,7 +441,7 @@ mod linux {
                 let mut s = state
                     .lock()
                     .map_err(|_| zbus::Error::Failure("poisoned".into()))?;
-                std::mem::replace(&mut *s, new.clone())
+                std::mem::replace(&mut *s, (new.clone(), std::time::Instant::now())).0
             };
             let elapsed = last_update.elapsed().as_millis() as u64;
             last_update = std::time::Instant::now();
@@ -524,6 +558,9 @@ mod linux {
             a.status = MediaStatus::Paused;
             b.position_ms = 10_000;
             assert!(!is_seek(&a, &b, 5000), "paused keeps position");
+            b.position_ms = 11_000;
+            b.seek_seq = 1;
+            assert!(is_seek(&a, &b, 0), "small user seeks also emit Seeked");
         }
     }
 }
@@ -531,6 +568,26 @@ mod linux {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn position_extrapolation_and_clamping() {
+        let mut s = MediaSnapshot {
+            status: MediaStatus::Playing,
+            position_ms: 1000,
+            track: Some(MediaTrack {
+                length_ms: 5000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(extrapolate(&s, 1500), 2500);
+        assert_eq!(extrapolate(&s, 60_000), 5000, "capped at track length");
+        s.status = MediaStatus::Paused;
+        assert_eq!(extrapolate(&s, 1500), 1000);
+        assert_eq!(clamp_ms(-5), 0);
+        assert_eq!(clamp_ms(i64::MAX), u32::MAX);
+        assert_eq!(clamp_ms(42), 42);
+    }
 
     #[test]
     fn track_paths() {
