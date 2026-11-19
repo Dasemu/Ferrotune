@@ -20,6 +20,7 @@ pub mod playback;
 pub mod playlist_edit;
 pub mod proto;
 pub mod session;
+pub mod soloist;
 pub mod spclient;
 pub mod tokens;
 pub mod types;

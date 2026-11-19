@@ -44,7 +44,7 @@ impl App {
                 ]),
                 None => Task::none(),
             },
-            Action::Exit => iced::exit(),
+            Action::Exit => self.quit(),
         }
     }
 

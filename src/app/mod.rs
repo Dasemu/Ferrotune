@@ -11,6 +11,7 @@ pub mod meta;
 pub mod playlists;
 pub mod settings;
 pub mod shortcuts;
+pub mod soloist;
 pub mod state;
 pub mod window;
 
@@ -189,6 +190,8 @@ pub struct App {
     pub local_denied: bool,
     /// One persistent playback error (instead of a looping toast).
     pub playback_block: Option<PlaybackBlock>,
+    /// Spotify Soloist, the official player, as the local audio engine.
+    pub soloist: soloist::SoloistState,
     skip_guard: state::SkipGuard,
     /// Playlist owner display names by username (`meta.rs`).
     pub owner_names: HashMap<String, String>,
@@ -304,11 +307,16 @@ fn session_options(
         client_id: config.client_id.clone(),
         device_id: Some(device_id.to_owned()),
         autoplay: settings.autoplay,
-        connect: settings.connect.then(|| ConnectOptions {
-            name,
-            bitrate: settings.bitrate.into(),
-            normalisation: settings.normalisation,
-            initial_volume: volume,
+        // With Soloist, Soloist is this computer's Connect device: never
+        // announce a second "Ferrotune", but keep the controller.
+        controller: settings.engine == config::AudioEngine::Soloist,
+        connect: (settings.connect && settings.engine != config::AudioEngine::Soloist).then(|| {
+            ConnectOptions {
+                name,
+                bitrate: settings.bitrate.into(),
+                normalisation: settings.normalisation,
+                initial_volume: volume,
+            }
         }),
     }
 }
@@ -318,7 +326,11 @@ pub fn engine_kind(mock: bool, s: &config::Settings) -> EngineKind {
     if mock {
         EngineKind::Mock
     } else {
-        EngineKind::Librespot(s.bitrate.into(), s.normalisation)
+        EngineKind::Librespot(
+            s.bitrate.into(),
+            s.normalisation,
+            s.engine != config::AudioEngine::Soloist,
+        )
     }
 }
 
@@ -486,6 +498,12 @@ fn playback_stream(kind: &EngineKind) -> impl futures::Stream<Item = PlaybackEve
     playback::events(*kind)
 }
 
+fn soloist_stream(
+    kind: &crate::net::soloist::SoloistKind,
+) -> impl futures::Stream<Item = crate::net::soloist::SoloistEvent> + use<> {
+    crate::net::soloist::events(kind.clone())
+}
+
 fn media_stream() -> impl futures::Stream<Item = MediaEvent> {
     crate::net::mpris::events()
 }
@@ -595,6 +613,7 @@ impl App {
             user_menu: false,
             local_denied: false,
             playback_block: None,
+            soloist: soloist::SoloistState::default(),
             skip_guard: state::SkipGuard::default(),
             owner_names: HashMap::new(),
             owner_requested: HashSet::new(),
@@ -742,6 +761,12 @@ impl App {
         if self.mpris_enabled {
             subs.push(Subscription::run(media_stream).map(|e| Message::Net(Net::Media(e))));
         }
+        if self.soloist_enabled() {
+            subs.push(
+                Subscription::run_with(self.soloist_kind(), soloist_stream)
+                    .map(|e| Message::Net(Net::Soloist(e))),
+            );
+        }
         subs.push(iced::event::listen_with(window_event));
         if self.tray_enabled {
             subs.push(Subscription::run(crate::tray::events).map(Message::Tray));
@@ -772,6 +797,7 @@ impl App {
             Message::Ui(u) => self.update_ui(u),
             Message::Net(Net::Playback(e)) => self.on_playback(e),
             Message::Net(Net::Media(e)) => self.on_media(e),
+            Message::Net(Net::Soloist(e)) => self.on_soloist(e),
             Message::Done(d) => self.on_done(d),
             Message::Tray(ev) => self.on_tray(ev),
         };
@@ -973,6 +999,20 @@ impl App {
         }
         self.show_toast(e.user_message());
         Task::none()
+    }
+
+    /// Quit: Soloist is asked to stop first (SIGTERM), so it can remove its
+    /// runtime files; the child also dies with us (`PR_SET_PDEATHSIG`).
+    pub(super) fn quit(&mut self) -> Task<Message> {
+        if let Some(h) = self.soloist.handle.take() {
+            h.send(crate::net::soloist::Control::Shutdown);
+            return Task::perform(
+                async { tokio::time::sleep(Duration::from_millis(400)).await },
+                |()| (),
+            )
+            .then(|()| iced::exit());
+        }
+        iced::exit()
     }
 
     fn show_toast(&mut self, msg: impl Into<String>) {
@@ -1674,6 +1714,10 @@ impl App {
                 self.reload_on_play = true;
                 let message = if reason.is_key_denied() {
                     self.local_denied = true;
+                    // Spotify's own player can play here: offer it.
+                    if !self.soloist_enabled() {
+                        self.soloist.card = true;
+                    }
                     let mut m = reason.describe().to_owned();
                     m.push_str(" You can play on another device instead.");
                     m
@@ -1715,13 +1759,24 @@ impl App {
         {
             return Some((id.clone(), name.clone()));
         }
+        if self.soloist_enabled() {
+            // Soloist is this computer; until it is ready the request
+            // waits (and the setup card explains why).
+            return Some(
+                self.soloist_device()
+                    .unwrap_or_else(|| (soloist::LOCAL_ID.to_owned(), self.settings_device_name())),
+            );
+        }
         if self.local_denied || !self.settings.play_local {
             return self.suggested_device();
         }
         None
     }
 
-    fn connect_task(&self, op: crate::net::connect_ctl::ConnectOp) -> Task<Message> {
+    fn connect_task(&mut self, op: crate::net::connect_ctl::ConnectOp) -> Task<Message> {
+        let Some(op) = self.soloist_intercept(op) else {
+            return Task::none();
+        };
         let Some(src) = self.source() else {
             return Task::none();
         };
@@ -1806,6 +1861,19 @@ impl App {
     fn transfer_to(&mut self, target: Option<(String, String)>) -> Task<Message> {
         use crate::net::connect_ctl::{ConnectOp, ControlCommand, PlayRequest};
         self.device_picker = false;
+        // "This computer" is the Soloist device when Soloist plays here.
+        let target =
+            match target {
+                None if self.soloist_enabled() => {
+                    if self.soloist_playing_here() {
+                        return Task::none();
+                    }
+                    Some(self.soloist_device().unwrap_or_else(|| {
+                        (soloist::LOCAL_ID.to_owned(), self.settings_device_name())
+                    }))
+                }
+                t => t,
+            };
         let remote_id = self
             .remote
             .as_ref()
@@ -1821,7 +1889,11 @@ impl App {
             let _ = from;
             return self.connect_task(ConnectOp::Transfer(own));
         };
-        let remember = self.remember_device(&id, &name);
+        let remember = if self.is_soloist_id(&id) {
+            Task::none()
+        } else {
+            self.remember_device(&id, &name)
+        };
         self.playback_block = None;
         let op = if remote_id.is_some() || self.queue.current.is_none() {
             ConnectOp::Transfer(id.clone())
@@ -1875,16 +1947,24 @@ impl App {
         let active = c.active_remote().cloned();
         let player = c.player.clone();
         self.cluster = Some(c);
+        // Soloist's own WebSocket events are faster and more precise than
+        // cluster pushes: they drive the bar while connected.
+        let soloist_ws = self.soloist.ws && self.soloist.status.is_ready();
         let Some(dev) = active else {
             if self
                 .remote
                 .as_ref()
                 .is_some_and(|r| matches!(r.kind, RemoteKind::Device { .. }))
+                && !(soloist_ws && self.soloist_playing_here())
             {
                 self.remote = None;
             }
             return Task::none();
         };
+        if self.is_soloist_id(&dev.id) && soloist_ws {
+            self.soloist_active(true);
+            return Task::none();
+        }
         if self
             .remote
             .as_ref()
@@ -1898,7 +1978,11 @@ impl App {
             let pos = self.playback.position(now);
             self.playback.report(PlayStatus::Paused, pos, now);
         }
-        let remember = self.remember_device(&dev.id, &dev.name);
+        let remember = if self.is_soloist_id(&dev.id) {
+            Task::none()
+        } else {
+            self.remember_device(&dev.id, &dev.name)
+        };
         self.set_remote_device(&dev.id, &dev.name);
         if let Some(r) = self.remote.as_mut() {
             if let Some(v) = dev.volume {
@@ -2110,7 +2194,28 @@ impl App {
                 }
                 MediaCommand::SetVolume(v) => self.update_ui(Ui::Volume(v as f32)),
                 MediaCommand::Raise => self.show_window(),
-                MediaCommand::Quit => iced::exit(),
+                MediaCommand::Quit => self.quit(),
+                MediaCommand::SetShuffle(on) if self.remote_device().is_some() => {
+                    if on != self.shown_shuffle() {
+                        return self.update_ui(Ui::ToggleShuffle);
+                    }
+                    Task::none()
+                }
+                MediaCommand::SetLoop(l) if self.remote_device().is_some() => {
+                    let want = match l {
+                        MediaLoop::None => Repeat::Off,
+                        MediaLoop::Playlist => Repeat::Context,
+                        MediaLoop::Track => Repeat::Track,
+                    };
+                    let mut tasks = Vec::new();
+                    for _ in 0..3 {
+                        if self.shown_repeat() == want {
+                            break;
+                        }
+                        tasks.push(self.update_ui(Ui::CycleRepeat));
+                    }
+                    Task::batch(tasks)
+                }
                 MediaCommand::SetShuffle(_) | MediaCommand::SetLoop(_) => Task::none(),
             },
             MediaEvent::Command(c) => {
@@ -2168,7 +2273,7 @@ impl App {
                         self.persist_setting("repeat", self.queue.repeat.as_str().into())
                     }
                     MediaCommand::Raise => self.show_window(),
-                    MediaCommand::Quit => iced::exit(),
+                    MediaCommand::Quit => self.quit(),
                 }
             }
         }
@@ -2209,9 +2314,9 @@ impl App {
             track,
             position_ms: pb.position(self.now),
             volume: f64::from(pb.effective_volume()),
-            shuffle: self.queue.shuffle,
+            shuffle: self.shown_shuffle(),
             seek_seq: self.seek_seq,
-            loop_status: match self.queue.repeat {
+            loop_status: match self.shown_repeat() {
                 Repeat::Off => MediaLoop::None,
                 Repeat::Context => MediaLoop::Playlist,
                 Repeat::Track => MediaLoop::Track,
@@ -2350,6 +2455,7 @@ impl App {
                 Task::none()
             }
             Ui::Setting(c) => self.change_setting(c),
+            Ui::Soloist(u) => self.update_soloist_ui(u),
             Ui::DismissBanner => {
                 self.playback_block = None;
                 Task::none()
@@ -2492,6 +2598,10 @@ impl App {
                 }
                 Task::none()
             }
+            Ui::Enqueue(t) if self.soloist_enqueue(&t.uri) => {
+                self.show_toast("Added to queue");
+                Task::none()
+            }
             Ui::Enqueue(t) => {
                 self.queue.enqueue(t);
                 self.show_toast("Added to queue");
@@ -2577,7 +2687,7 @@ impl App {
                 let t = self.update_ui(Ui::Volume(v));
                 Task::batch([t, self.update_ui(Ui::VolumeCommit)])
             }
-            Ui::Quit => iced::exit(),
+            Ui::Quit => self.quit(),
             Ui::CloseRequested
             | Ui::ToggleWindow
             | Ui::ShowWindow
@@ -2941,6 +3051,11 @@ impl App {
             }
             Done::PlaylistCreated(tmp, r) => self.on_playlist_created(tmp, r),
             Done::PlaylistEdited(snap, what, r) => self.on_playlist_edited(*snap, what, r),
+            Done::SoloistKey(r) => {
+                self.on_soloist_key(r);
+                Task::none()
+            }
+            Done::SoloistKeySaved(r) => self.on_soloist_key_saved(r),
             Done::AutostartLoaded(on) => {
                 self.autostart = on;
                 Task::none()
@@ -2952,7 +3067,7 @@ impl App {
                 }
                 Task::none()
             }
-            Done::Quit => iced::exit(),
+            Done::Quit => self.quit(),
             Done::ConnectSent(Ok(())) => Task::none(),
             Done::OwnerNames(v) => self.on_owner_names(v),
             Done::PlaylistFill(v) => self.on_playlist_fill(v),
@@ -3158,6 +3273,18 @@ impl App {
                     }),
                 );
             }
+            "soloist" => {
+                // First use: Spotify refused librespot's audio key.
+                self.nav = Nav::new(Route::Home);
+                self.soloist_screenshot(false);
+            }
+            "soloist-settings" => {
+                // Soloist on and ready (the mock engine walks the states).
+                self.nav = Nav::new(Route::Home);
+                tasks.push(self.navigate(Route::Settings));
+                self.cache_bytes = Some(23_400_000);
+                self.soloist_screenshot(true);
+            }
             "profile" => {
                 self.nav = Nav::new(Route::Home);
                 self.profiles
@@ -3330,6 +3457,7 @@ mod tests {
         SpotifySession {
             session: librespot_core::Session::new(librespot_core::SessionConfig::default(), None),
             connect: None,
+            dealer: false,
         }
     }
 
@@ -3630,6 +3758,7 @@ mod tests {
         app.session = Some(SpotifySession {
             session: librespot_core::Session::new(librespot_core::SessionConfig::default(), None),
             connect: None,
+            dealer: false,
         });
         let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::SessionLost)));
         assert!(app.session.is_none());
@@ -3857,6 +3986,256 @@ mod tests {
         let _ = app.update(remote(RemoteEvent::Stopped));
         assert!(app.remote.is_none());
         assert_eq!(app.now_track().unwrap().uri, tracks[0].uri);
+    }
+
+    // ------------------------------------------------------------ soloist
+
+    use crate::net::soloist::protocol::{Command as SCmd, Event as SEv};
+    use crate::net::soloist::{Control, EngineStatus, SoloistEvent, SoloistHandle};
+
+    /// A real app with Soloist on, ready and connected, and a captured
+    /// command channel.
+    fn soloist_app() -> (
+        App,
+        tokio::sync::mpsc::UnboundedReceiver<PlaybackCommand>,
+        tokio::sync::mpsc::UnboundedReceiver<Control>,
+        Vec<Track>,
+    ) {
+        let (mut app, rx, tracks) = real_app_playing();
+        app.settings.engine = config::AudioEngine::Soloist;
+        let (h, ctl) = SoloistHandle::channel();
+        let sol = |e| Message::Net(Net::Soloist(e));
+        let _ = app.update(sol(SoloistEvent::Ready(h)));
+        feed(
+            &mut app,
+            Done::SoloistKey(Ok(Some(crate::auth::secrets::Secret::new(
+                "test-key-123456",
+            )))),
+        );
+        let _ = app.update(sol(SoloistEvent::Status(EngineStatus::Ready)));
+        let _ = app.update(sol(SoloistEvent::Connected(true)));
+        (app, rx, ctl, tracks)
+    }
+
+    fn ws_cmds(ctl: &mut tokio::sync::mpsc::UnboundedReceiver<Control>) -> Vec<SCmd> {
+        std::iter::from_fn(|| ctl.try_recv().ok())
+            .filter_map(|c| match c {
+                Control::Ws(c) => Some(c),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn sws(app: &mut App, e: SEv) {
+        let _ = app.update(Message::Net(Net::Soloist(SoloistEvent::Ws(e))));
+    }
+
+    #[test]
+    fn soloist_turns_off_our_connect_device_and_local_player() {
+        let mut s = config::Settings {
+            engine: config::AudioEngine::Soloist,
+            ..config::Settings::default()
+        };
+        let o = session_options(&Config::for_tests(), &s, 0.5, "id");
+        assert!(o.connect.is_none(), "no second Ferrotune device");
+        assert!(o.controller, "the Connect controller stays");
+        assert!(matches!(
+            engine_kind(false, &s),
+            EngineKind::Librespot(_, _, false)
+        ));
+        s.engine = config::AudioEngine::Builtin;
+        let o = session_options(&Config::for_tests(), &s, 0.5, "id");
+        assert!(o.connect.is_some() && !o.controller);
+        assert!(matches!(
+            engine_kind(false, &s),
+            EngineKind::Librespot(_, _, true)
+        ));
+    }
+
+    #[test]
+    fn soloist_plays_and_follows_its_events() {
+        let (mut app, mut rx, mut ctl, tracks) = soloist_app();
+        let configured = std::iter::from_fn(|| ctl.try_recv().ok())
+            .any(|c| matches!(c, Control::Configure { key: Some(_), .. }));
+        assert!(configured, "the key from the keyring starts the engine");
+        // No cluster yet: the WebSocket fallback plays the chosen track.
+        let _ = app.update(ui(Ui::PlayFrom(
+            TrackSource::Playlist("pl01".into()),
+            Some(2),
+        )));
+        assert_eq!(
+            ws_cmds(&mut ctl),
+            vec![SCmd::Activate, SCmd::Play(Some(tracks[2].uri.clone()))]
+        );
+        assert!(drain_loads(&mut rx).is_empty(), "librespot plays nothing");
+        assert!(app.soloist_playing_here());
+        // Soloist reports what it plays: the bar and MPRIS follow.
+        let snap: crate::net::soloist::protocol::PlaybackSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "status": "playing", "is_active": true, "volume": 40,
+                "item": {"uri": "spotify:track:abc", "entity_type": "track", "decorations": {
+                    "identity": {"name": "From Soloist"},
+                    "playback": {"duration_ms": 200000},
+                    "creators": [{"entity": {"decorations": {"identity": {"name": "Band"}}}}]
+                }},
+                "position": {"position_ms": 1000, "timestamp_ms": 0, "speed": 0.0},
+                "options": {"shuffle": true, "repeat": "context"}
+            }))
+            .unwrap();
+        sws(&mut app, SEv::PlaybackState(Box::new(snap)));
+        assert_eq!(app.now_track().unwrap().name, "From Soloist");
+        assert_eq!(app.media_snapshot().track.unwrap().title, "From Soloist");
+        assert!(app.now_playback().is_playing());
+        assert!(app.shown_shuffle());
+        assert_eq!(app.shown_repeat(), Repeat::Context);
+        assert!((app.now_playback().volume - 0.4).abs() < 1e-6);
+        assert!(
+            super::super::ui::devices::playing_on(&app).is_none(),
+            "this computer"
+        );
+        // Transport goes to the WebSocket API.
+        let _ = app.update(ui(Ui::TogglePlay));
+        let _ = app.update(ui(Ui::Next));
+        let _ = app.update(ui(Ui::Volume(0.5)));
+        let _ = app.update(ui(Ui::CycleRepeat));
+        let _ = app.update(ui(Ui::ToggleShuffle));
+        let _ = app.update(ui(Ui::Enqueue(tracks[5].clone())));
+        assert_eq!(
+            ws_cmds(&mut ctl),
+            vec![
+                SCmd::Pause,
+                SCmd::SkipNext,
+                SCmd::SetVolume(50),
+                SCmd::SetRepeatContext(false),
+                SCmd::SetRepeatTrack(true),
+                SCmd::SetShuffle(false),
+                SCmd::AddToQueue(tracks[5].uri.clone()),
+            ]
+        );
+        sws(
+            &mut app,
+            SEv::PlaybackChanged {
+                status: crate::net::soloist::protocol::Status::Paused,
+            },
+        );
+        assert!(!app.now_playback().is_playing());
+        // Another device takes over: the bar leaves Soloist.
+        sws(
+            &mut app,
+            SEv::DeviceChanged {
+                is_active: false,
+                device_name: String::new(),
+            },
+        );
+        assert!(app.remote.is_none());
+    }
+
+    #[test]
+    fn soloist_in_the_cluster_gets_contexts_through_connect_state() {
+        let (mut app, _rx, mut ctl, tracks) = soloist_app();
+        let mut c = crate::mock::cluster();
+        c.devices.push(crate::net::connect_ctl::RemoteDevice {
+            id: "soloist-device-id".into(),
+            name: app.settings_device_name(),
+            kind: crate::net::connect_ctl::DeviceKind::Computer,
+            volume: Some(0.5),
+            is_active: false,
+        });
+        c.active_device_id = None;
+        for d in &mut c.devices {
+            d.is_active = false;
+        }
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::Cluster(c))));
+        assert_eq!(
+            app.soloist_device().map(|d| d.0).as_deref(),
+            Some("soloist-device-id")
+        );
+        let _ = app.update(ui(Ui::PlayFrom(
+            TrackSource::Playlist("pl01".into()),
+            Some(3),
+        )));
+        // Start-at-track needs connect-state (skip_to): nothing on the WS.
+        assert!(ws_cmds(&mut ctl).is_empty());
+        assert_eq!(app.remote_device(), Some("soloist-device-id"));
+        assert_eq!(app.now_track().unwrap().uri, tracks[3].uri);
+        // A whole context from the top fits the WebSocket `play`.
+        let _ = app.update(ui(Ui::PlayFrom(TrackSource::Album("al01".into()), None)));
+        assert_eq!(
+            ws_cmds(&mut ctl),
+            vec![
+                SCmd::Activate,
+                SCmd::Play(Some("spotify:album:al01".into()))
+            ]
+        );
+        // The picker lists Soloist as "This computer", not as a device.
+        assert!(app.is_soloist_id("soloist-device-id"));
+        assert!(!app.is_soloist_id("phone"));
+    }
+
+    #[test]
+    fn playing_before_soloist_is_ready_waits_and_shows_the_card() {
+        let (mut app, mut rx, mut ctl, tracks) = soloist_app();
+        let sol = |e| Message::Net(Net::Soloist(e));
+        let _ = app.update(sol(SoloistEvent::Status(EngineStatus::NeedsPairing)));
+        assert!(app.soloist_card(), "pairing instruction");
+        ws_cmds(&mut ctl);
+        let _ = app.update(ui(Ui::PlayFrom(
+            TrackSource::Playlist("pl01".into()),
+            Some(1),
+        )));
+        assert!(ws_cmds(&mut ctl).is_empty());
+        assert!(
+            drain_loads(&mut rx).is_empty(),
+            "never the denied local path"
+        );
+        // Paired from the phone: the request goes out, the card closes.
+        let _ = app.update(sol(SoloistEvent::Status(EngineStatus::Ready)));
+        assert_eq!(
+            ws_cmds(&mut ctl),
+            vec![SCmd::Activate, SCmd::Play(Some(tracks[1].uri.clone()))]
+        );
+        assert!(!app.soloist_card());
+    }
+
+    #[tokio::test]
+    async fn audio_key_denied_offers_soloist_and_a_saved_key_switches_engine() {
+        use crate::net::audio_diag::UnavailableReason as R;
+        let (mut app, _rx, _tracks) = real_app_playing();
+        app.session = Some(fake_session());
+        let _ = app.update(ui(Ui::PlayFrom(
+            TrackSource::Playlist("pl01".into()),
+            Some(0),
+        )));
+        unavailable(&mut app, R::AudioKeyDenied { code: 1 });
+        assert!(app.soloist_card(), "the setup card opens");
+        feed(&mut app, Done::SoloistKey(Ok(None)));
+        assert!(app.soloist.wants_key());
+        // A bad paste is refused without touching the keyring.
+        let s = |u| ui(Ui::Soloist(soloist::SoloistUi::KeyInput(u)));
+        let _ = app.update(s(crate::auth::secrets::Secret::new("bad key")));
+        let _ = app.update(ui(Ui::Soloist(soloist::SoloistUi::SaveKey)));
+        assert!(app.toast.as_ref().unwrap().0.contains("API key"));
+        assert_eq!(app.settings.engine, config::AudioEngine::Builtin);
+        // Saved: Soloist becomes the engine and the session is rebuilt.
+        feed(
+            &mut app,
+            Done::SoloistKeySaved(Ok(crate::auth::secrets::Secret::new("good-key-123456"))),
+        );
+        assert_eq!(app.settings.engine, config::AudioEngine::Soloist);
+        assert!(
+            app.session.is_none(),
+            "reconnects without our Connect device"
+        );
+        assert!(!app.local_denied);
+        assert!(matches!(
+            app.engine_kind,
+            EngineKind::Librespot(_, _, false)
+        ));
+        assert!(app.soloist.has_key());
+        // Back to the built-in player.
+        let _ = app.update(ui(Ui::Soloist(soloist::SoloistUi::Enable(false))));
+        assert_eq!(app.settings.engine, config::AudioEngine::Builtin);
+        assert!(app.soloist.handle.is_none());
     }
 
     #[test]

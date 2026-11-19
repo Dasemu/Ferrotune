@@ -44,7 +44,8 @@ fn device_row<'a>(name: String, sub: Option<String>, ic: Icon, active: bool, msg
 pub fn picker(app: &App) -> El<'_> {
     let p = pal();
     let remote = app.remote_device();
-    let local_active = remote.is_none();
+    let soloist_here = app.soloist_playing_here();
+    let local_active = remote.is_none() || soloist_here;
     let mut col = column![
         container(label(
             "Current device",
@@ -55,7 +56,13 @@ pub fn picker(app: &App) -> El<'_> {
         .padding(Padding::from([8, 12])),
         device_row(
             "This computer".into(),
-            Some(if app.local_denied {
+            Some(if app.soloist_enabled() {
+                format!(
+                    "{} · Spotify Soloist ({})",
+                    app.settings_device_name(),
+                    app.soloist.status.label().to_lowercase()
+                )
+            } else if app.local_denied {
                 "Spotify does not allow playback here".into()
             } else {
                 app.settings_device_name()
@@ -66,11 +73,15 @@ pub fn picker(app: &App) -> El<'_> {
         ),
     ]
     .spacing(0);
-    let devices = app
+    // Soloist is "This computer", not another device.
+    let devices: Vec<_> = app
         .cluster
         .as_ref()
         .map(|c| c.devices.as_slice())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .iter()
+        .filter(|d| !app.is_soloist_id(&d.id))
+        .collect();
     col = col.push(
         container(label(
             "Select another device",
@@ -132,6 +143,9 @@ pub fn picker(app: &App) -> El<'_> {
 
 /// Green strip under the player while another device plays.
 pub fn playing_on(app: &App) -> Option<El<'_>> {
+    if app.soloist_playing_here() {
+        return None;
+    }
     let name = app.remote.as_ref()?.device_name()?;
     Some(
         container(
