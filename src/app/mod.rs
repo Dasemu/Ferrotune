@@ -2141,6 +2141,30 @@ impl App {
                 self.nav = Nav::new(Route::Home);
                 tasks.push(self.navigate(Route::Liked));
             }
+            "lyrics" => {
+                self.show_lyrics = true;
+                self.nav = Nav::new(Route::Home);
+            }
+            "connect" => {
+                // Another device casting to us through Spotify Connect.
+                self.nav = Nav::new(Route::Home);
+                tasks.push(self.navigate(Route::Artist("ar03".into())));
+                if let Ok(a) = crate::mock::artist_page("ar03")
+                    && let Some(t) = a.top_tracks.first()
+                {
+                    self.on_remote(RemoteEvent::Track(RemoteTrack {
+                        uri: t.uri.clone(),
+                        name: t.name.clone(),
+                        artists: t.artists.iter().map(|a| a.name.clone()).collect(),
+                        album: t.album.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
+                        cover_url: pick_image(t.images(), 300).map(|i| i.url.clone()),
+                        duration_ms: t.duration_ms,
+                    }));
+                    self.on_remote(RemoteEvent::Playing {
+                        position_ms: 41_000,
+                    });
+                }
+            }
             "queue" => {
                 self.show_queue = true;
                 self.nav = Nav::new(Route::Home);
@@ -2428,5 +2452,78 @@ mod tests {
         ))));
         assert!((app.playback.volume - 0.25).abs() < 1e-6);
         assert_eq!(app.media_snapshot().loop_status, MediaLoop::Track);
+    }
+
+    #[test]
+    fn connect_playback_takes_over_the_player_bar() {
+        let (mut app, mut rx, tracks) = real_app_playing();
+        let _ = app.update(ui(Ui::PlayFrom(
+            TrackSource::Playlist("pl01".into()),
+            Some(0),
+        )));
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::Playing {
+            uri: tracks[0].uri.clone(),
+            position_ms: 1_000,
+        })));
+        while rx.try_recv().is_ok() {}
+        let remote = |e| Message::Net(Net::Playback(PlaybackEvent::Remote(e)));
+        let _ = app.update(remote(RemoteEvent::Track(RemoteTrack {
+            uri: "spotify:track:remote1".into(),
+            name: "From the phone".into(),
+            artists: vec!["Someone".into()],
+            album: "Elsewhere".into(),
+            cover_url: Some("https://i.scdn.co/image/x".into()),
+            duration_ms: 200_000,
+        })));
+        let _ = app.update(remote(RemoteEvent::Playing { position_ms: 5_000 }));
+        assert_eq!(app.now_track().unwrap().name, "From the phone");
+        assert_eq!(app.media_snapshot().track.unwrap().title, "From the phone");
+        assert_eq!(
+            app.playback.status,
+            PlayStatus::Paused,
+            "local queue yields"
+        );
+        // Transport controls go to the Connect device.
+        let _ = app.update(ui(Ui::TogglePlay));
+        let _ = app.update(ui(Ui::Next));
+        let cmds: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(matches!(
+            cmds.as_slice(),
+            [
+                PlaybackCommand::Remote(RemoteCommand::Pause),
+                PlaybackCommand::Remote(RemoteCommand::Next)
+            ]
+        ));
+        // The phone moves playback elsewhere: back to the local queue.
+        let _ = app.update(remote(RemoteEvent::Stopped));
+        assert!(app.remote.is_none());
+        assert_eq!(app.now_track().unwrap().uri, tracks[0].uri);
+    }
+
+    #[test]
+    fn silent_login_rejection_falls_back_to_browser_login() {
+        let mut cfg = Config::for_tests();
+        cfg.mock = false;
+        let (mut app, _) = App::boot(cfg, Options::default());
+        app.secrets = Arc::new(MemoryStore::new());
+        app.auth = AuthState::Restoring;
+        feed(
+            &mut app,
+            Done::Restored(Err(Error::revoked(crate::auth::SILENT_LOGIN_REJECTED))),
+        );
+        assert_eq!(
+            app.auth,
+            AuthState::SignedOut {
+                error: Some(crate::auth::SILENT_LOGIN_REJECTED.into())
+            }
+        );
+        assert!(!app.has_stored_credentials);
+
+        // A transient failure keeps the credentials: "Log in" retries silently.
+        app.auth = AuthState::Restoring;
+        feed(&mut app, Done::Restored(Err(Error::Net("offline".into()))));
+        assert!(app.has_stored_credentials);
+        let _ = app.update(ui(Ui::Login));
+        assert_eq!(app.auth, AuthState::Connecting, "no browser for a retry");
     }
 }
