@@ -1,0 +1,94 @@
+name: Release
+
+# Publishes a GitHub Release (Linux x86_64 tarball + .sha256) after every
+# successful "Version bump" run on main. The bump commit that workflow pushes
+# uses GITHUB_TOKEN, which never triggers `push` workflows, so this chains off
+# `workflow_run` instead. Re-run manually from Actions -> Release -> Run
+# workflow; it skips when release v<Cargo.toml version> already exists.
+on:
+  workflow_run:
+    workflows: ["Version bump"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # Oldest supported runner image: the binary links an older glibc and so runs on more distros.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Read version and check for an existing release
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          [ -n "$version" ] || { echo "::error::no version in Cargo.toml"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "Release v$version already exists, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install system libraries
+        if: steps.ver.outputs.skip != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libdbus-1-dev libasound2-dev libxkbcommon-dev \
+            libwayland-dev libx11-dev libfontconfig1-dev dbus
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.ver.outputs.skip != 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.ver.outputs.skip != 'true'
+      - name: Build release binary
+        if: steps.ver.outputs.skip != 'true'
+        run: cargo build --release --locked
+      - name: Shared libraries of the binary
+        if: steps.ver.outputs.skip != 'true'
+        run: ldd target/release/ferrotune
+      - name: Package
+        if: steps.ver.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="ferrotune-v${VERSION}-linux-x86_64"
+          mkdir -p "dist/$name/packaging" "dist/$name/licenses"
+          cp target/release/ferrotune README.md LICENSE "dist/$name/"
+          cp assets/desktop/dev.ferro.ferrotune.desktop "dist/$name/packaging/dev.ferro.ferrotune.desktop"
+          cp assets/desktop/dev.ferro.ferrotune.svg "dist/$name/packaging/dev.ferro.ferrotune.svg"
+          cp assets/fonts/OFL.txt "dist/$name/licenses/Inter-OFL.txt"
+          cp assets/icons/LICENSE "dist/$name/licenses/Lucide-ISC.txt"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          ls -l dist
+      - name: Create GitHub Release
+        if: steps.ver.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA: ${{ steps.ver.outputs.sha }}
+        run: |
+          set -euo pipefail
+          name="ferrotune-v${VERSION}-linux-x86_64"
+          gh release create "v${VERSION}" --target "$SHA" \
+            --title "Ferrotune v${VERSION}" --generate-notes \
+            "dist/$name.tar.gz" "dist/$name.tar.gz.sha256"

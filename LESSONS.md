@@ -77,3 +77,4 @@ Things learned while building Ferrotune. Add new entries at the top.
   `session.auth_data()` after connect and store it in the keyring ourselves.
 - **Screenshots under Xvfb** work with `ICED_BACKEND=tiny-skia`; give the
   async image loads ~2.5 s before calling `window::screenshot`.
+- Bot pushes made with `GITHUB_TOKEN` never trigger `push` workflows, so the release workflow chains off the version workflow with `workflow_run` (conclusion `success`, branch `main`, checkout `ref: main` for the bump commit).
