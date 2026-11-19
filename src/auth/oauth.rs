@@ -1,16 +1,20 @@
 //! OAuth 2.0 Authorization Code flow with PKCE (RFC 7636) against the
 //! Spotify accounts service, with a loopback redirect listener.
 //!
-//! No client secret is involved: the client id is public and the PKCE
-//! verifier proves that the token request comes from the same process that
-//! opened the browser.
+//! This is the same browser login the librespot binary, ncspot and
+//! spotify-player use: the public *desktop* client id (taken from librespot's
+//! `SessionConfig`), the `http://127.0.0.1:<port>/login` redirect it accepts,
+//! and PKCE instead of a client secret. The resulting access token is used
+//! exactly once, to open the librespot session; from then on the session's
+//! reusable credentials (keyring) and its login5 tokens are the only
+//! credentials Ferrotune holds. No developer-dashboard app is involved.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::Rng;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -218,30 +222,18 @@ async fn accept_loop(listener: TcpListener, expected_state: &str) -> Result<Secr
     }
 }
 
-/// Access + refresh token pair. Serialised only into the keyring.
+/// Result of the code exchange. Never persisted: it only opens the session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TokenSet {
     pub access_token: Secret,
-    pub refresh_token: Option<Secret>,
     /// Unix seconds.
     pub expires_at: u64,
     pub scope: String,
 }
 
-#[derive(Serialize, Deserialize)]
-struct StoredTokens {
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_at: u64,
-    #[serde(default)]
-    scope: String,
-}
-
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
     expires_in: u64,
     #[serde(default)]
     scope: String,
@@ -265,34 +257,9 @@ impl TokenSet {
         now.saturating_add(EXPIRY_MARGIN_SECS) >= self.expires_at
     }
 
-    pub fn to_secret(&self) -> Result<Secret> {
-        let s = StoredTokens {
-            access_token: self.access_token.expose().to_owned(),
-            refresh_token: self.refresh_token.as_ref().map(|r| r.expose().to_owned()),
-            expires_at: self.expires_at,
-            scope: self.scope.clone(),
-        };
-        Ok(Secret::new(serde_json::to_string(&s)?))
-    }
-
-    pub fn from_secret(secret: &Secret) -> Result<Self> {
-        let s: StoredTokens = serde_json::from_str(secret.expose())
-            .map_err(|_| Error::auth("stored token is unreadable"))?;
-        Ok(Self {
-            access_token: Secret::new(s.access_token),
-            refresh_token: s.refresh_token.map(Secret::new),
-            expires_at: s.expires_at,
-            scope: s.scope,
-        })
-    }
-
-    fn from_response(r: TokenResponse, previous_refresh: Option<&Secret>, now: u64) -> Self {
+    fn from_response(r: TokenResponse, now: u64) -> Self {
         Self {
             access_token: Secret::new(r.access_token),
-            refresh_token: r
-                .refresh_token
-                .map(Secret::new)
-                .or_else(|| previous_refresh.cloned()),
             expires_at: now.saturating_add(r.expires_in),
             scope: r.scope,
         }
@@ -303,7 +270,6 @@ async fn token_request(
     http: &reqwest::Client,
     accounts_base: &str,
     form: &[(&str, &str)],
-    previous_refresh: Option<&Secret>,
 ) -> Result<TokenSet> {
     let resp = http
         .post(format!("{accounts_base}/api/token"))
@@ -315,15 +281,12 @@ async fn token_request(
     if status.is_success() {
         let r: TokenResponse = serde_json::from_slice(&body)
             .map_err(|_| Error::Protocol("token response was not valid JSON".into()))?;
-        return Ok(TokenSet::from_response(r, previous_refresh, now_secs()));
+        return Ok(TokenSet::from_response(r, now_secs()));
     }
     let err: Option<TokenError> = serde_json::from_slice(&body).ok();
     match err {
-        Some(e) if e.error == "invalid_grant" => Err(Error::revoked(
-            "Your Spotify session expired. Please log in again.",
-        )),
         Some(e) => Err(Error::auth(format!(
-            "Token request failed: {}{}",
+            "Spotify refused the login: {}{}",
             e.error,
             e.error_description
                 .map(|d| format!(" ({d})"))
@@ -355,28 +318,6 @@ pub async fn exchange_code(
             ("client_id", client_id),
             ("code_verifier", verifier.expose()),
         ],
-        None,
-    )
-    .await
-}
-
-/// Refresh the access token. Spotify may or may not rotate the refresh token;
-/// the old one is kept when no new one is returned.
-pub async fn refresh(
-    http: &reqwest::Client,
-    accounts_base: &str,
-    client_id: &str,
-    refresh_token: &Secret,
-) -> Result<TokenSet> {
-    token_request(
-        http,
-        accounts_base,
-        &[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token.expose()),
-            ("client_id", client_id),
-        ],
-        Some(refresh_token),
     )
     .await
 }
@@ -481,15 +422,12 @@ mod tests {
     }
 
     #[test]
-    fn token_set_roundtrip_and_expiry() {
+    fn token_expiry_saturates() {
         let t = TokenSet {
             access_token: Secret::new("a"),
-            refresh_token: Some(Secret::new("r")),
             expires_at: 1000,
             scope: "streaming".into(),
         };
-        let back = TokenSet::from_secret(&t.to_secret().unwrap()).unwrap();
-        assert_eq!(back, t);
         assert!(!t.is_expired(900));
         assert!(t.is_expired(941));
         assert!(t.is_expired(u64::MAX), "no overflow");
@@ -498,17 +436,31 @@ mod tests {
     }
 
     #[test]
-    fn refresh_keeps_previous_refresh_token() {
-        let r = TokenResponse {
-            access_token: "new".into(),
-            refresh_token: None,
-            expires_in: 3600,
-            scope: String::new(),
-        };
-        let prev = Secret::new("old-refresh");
-        let t = TokenSet::from_response(r, Some(&prev), 10);
-        assert_eq!(t.refresh_token.unwrap().expose(), "old-refresh");
-        assert_eq!(t.expires_at, 3610);
+    fn desktop_login_url_uses_librespot_identity() {
+        let cfg = crate::config::Config::for_tests();
+        let u = authorize_url(
+            &cfg.accounts_base,
+            &cfg.client_id,
+            &cfg.redirect_uri(),
+            "chal",
+            "st",
+            crate::config::SCOPES,
+        )
+        .unwrap();
+        let parsed = url::Url::parse(&u).unwrap();
+        let q: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(parsed.host_str(), Some("accounts.spotify.com"));
+        assert_eq!(q["client_id"], "65b708073fc0480ea92a077233ca87bd");
+        assert_eq!(q["redirect_uri"], "http://127.0.0.1:8898/login");
+        let scopes: Vec<&str> = q["scope"].split(' ').collect();
+        for needed in [
+            "streaming",
+            "user-library-read",
+            "user-library-modify",
+            "playlist-read-private",
+        ] {
+            assert!(scopes.contains(&needed), "{needed}");
+        }
     }
 
     #[tokio::test]

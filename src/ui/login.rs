@@ -1,4 +1,5 @@
-//! Login screen: PKCE browser login, waiting state, setup instructions.
+//! Login screen: one "Log in" button that opens accounts.spotify.com in the
+//! browser (like the official desktop app), and the waiting state.
 
 use iced::widget::{button, column, container, row, text};
 use iced::{Alignment, Color, Length, Padding};
@@ -74,12 +75,11 @@ pub fn view(app: &App) -> El<'_> {
             );
         }
         AuthState::SignedOut { error } => {
-            col = col.push(pill("Continue with Spotify", true, ui(Ui::Login)));
+            col = col.push(pill("Log in", true, ui(Ui::Login)));
             col = col.push(vspace(8.0));
-            col = col.push(para(format!(
-                "Your browser opens Spotify's login page. Ferrotune receives the result on {}.",
-                app.config.redirect_uri()
-            )));
+            col = col.push(para(
+                "Your browser opens accounts.spotify.com. Approve the login there and come back: there is nothing to set up.",
+            ));
             if let Some(e) = error {
                 col = col.push(vspace(8.0)).push(
                     row![
@@ -101,17 +101,6 @@ pub fn view(app: &App) -> El<'_> {
                 .push(pill("Copy login link", false, ui(Ui::CopyLoginUrl)))
                 .push(pill("Cancel", false, ui(Ui::CancelLogin)));
         }
-        AuthState::MissingClientId => {
-            col = col
-                .push(label("Set up a Spotify app first", M.font_lg, Color::WHITE, FONT_BOLD))
-                .push(para("1. Create an app at developer.spotify.com/dashboard (Web API + Web Playback SDK)."))
-                .push(para(format!("2. Add the redirect URI {}", app.config.redirect_uri())))
-                .push(para("3. Start Ferrotune with FERROTUNE_CLIENT_ID=<client id>, or put {\"client_id\": \"…\"} in config.json."))
-                .push(para(format!(
-                    "Config file: {}",
-                    app.config.config_dir.join("config.json").display()
-                )));
-        }
         AuthState::SignedIn { .. } => {}
     }
 
@@ -121,7 +110,7 @@ pub fn view(app: &App) -> El<'_> {
     container(column![
         container(card).center(Length::Fill),
         container(secondary(
-            "Ferrotune is not affiliated with, endorsed or sponsored by Spotify AB.",
+            "Unofficial client, not affiliated with Spotify AB. Third-party clients may break Spotify's terms and put your account at risk.",
             M.font_xs + 1.0
         ))
         .center_x(Length::Fill)
