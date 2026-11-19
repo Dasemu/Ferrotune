@@ -1,7 +1,9 @@
 //! Local cache: SQLite via rusqlite (architecture §8).
 //!
 //! Domain objects are stored as JSON blobs keyed by `(kind, id)`; small
-//! settings (volume, shuffle, repeat, last screen) live in `kv`.
+//! settings (volume, shuffle, repeat, last screen) live in `kv`; raw
+//! responses of Spotify's internal endpoints live in `http_cache` (TTL
+//! decided by the caller, see `net::client`).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -13,9 +15,12 @@ use serde::de::DeserializeOwned;
 use crate::error::{Error, Result};
 
 const SCHEMA: &str = include_str!("schema.sql");
-pub const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_V2: &str = include_str!("schema_v2.sql");
+pub const SCHEMA_VERSION: i64 = 2;
 /// Upper bound on cached entities; oldest are pruned beyond this.
 pub const MAX_ENTITIES: i64 = 2000;
+/// Upper bound on cached HTTP responses.
+pub const MAX_RESPONSES: i64 = 3000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -26,6 +31,8 @@ pub enum Kind {
     Artist,
     Liked,
     User,
+    /// Synced collection index (Liked Songs / saved albums / followed artists).
+    Collection,
 }
 
 impl Kind {
@@ -38,6 +45,7 @@ impl Kind {
             Self::Artist => "artist",
             Self::Liked => "liked",
             Self::User => "user",
+            Self::Collection => "collection",
         }
     }
 }
@@ -118,6 +126,46 @@ impl Store {
         }
     }
 
+    /// Cached response body and its age in seconds.
+    pub fn cache_get(&self, key: &str) -> Result<Option<(Vec<u8>, i64)>> {
+        self.with(|c| {
+            Ok(c.query_row(
+                "SELECT body, fetched_at FROM http_cache WHERE key = ?1",
+                params![key],
+                |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()?
+            .map(|(b, at)| (b, now().saturating_sub(at).max(0))))
+        })
+    }
+
+    pub fn cache_put(&self, key: &str, body: &[u8]) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO http_cache(key, body, fetched_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET body = excluded.body, fetched_at = excluded.fetched_at",
+                params![key, body, now()],
+            )?;
+            c.execute(
+                "DELETE FROM http_cache WHERE rowid IN (
+                    SELECT rowid FROM http_cache ORDER BY fetched_at DESC, rowid DESC LIMIT -1 OFFSET ?1
+                 )",
+                params![MAX_RESPONSES],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Drop cached responses whose key contains `needle`.
+    pub fn cache_invalidate(&self, needle: &str) -> Result<usize> {
+        self.with(|c| {
+            Ok(c.execute(
+                "DELETE FROM http_cache WHERE instr(key, ?1) > 0",
+                params![needle],
+            )?)
+        })
+    }
+
     pub fn count(&self) -> Result<i64> {
         self.with(|c| Ok(c.query_row("SELECT COUNT(*) FROM entity", [], |r| r.get(0))?))
     }
@@ -159,7 +207,7 @@ impl Store {
     /// Remove all cached user data (logout).
     pub fn clear(&self) -> Result<()> {
         self.with(|c| {
-            c.execute_batch("DELETE FROM entity; DELETE FROM kv;")?;
+            c.execute_batch("DELETE FROM entity; DELETE FROM kv; DELETE FROM http_cache;")?;
             Ok(())
         })
     }
@@ -185,6 +233,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 1 {
         conn.execute_batch(SCHEMA)?;
+    }
+    if version < 2 {
+        conn.execute_batch(SCHEMA_V2)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -254,6 +305,36 @@ mod tests {
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn response_cache_roundtrip_and_invalidation() {
+        let s = Store::in_memory().unwrap();
+        assert!(s.cache_get("GET:sp:/a").unwrap().is_none());
+        s.cache_put("GET:sp:/a", b"one").unwrap();
+        s.cache_put("POST:sp:/collection/v2/paging#1", b"two")
+            .unwrap();
+        let (body, age) = s.cache_get("GET:sp:/a").unwrap().unwrap();
+        assert_eq!(body, b"one");
+        assert!(age <= 1);
+        assert_eq!(s.cache_invalidate("/collection/").unwrap(), 1);
+        assert!(
+            s.cache_get("POST:sp:/collection/v2/paging#1")
+                .unwrap()
+                .is_none()
+        );
+        s.clear().unwrap();
+        assert!(s.cache_get("GET:sp:/a").unwrap().is_none());
+    }
+
+    #[test]
+    fn v1_database_is_migrated() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        let s = Store::init(conn).unwrap();
+        s.cache_put("k", b"v").unwrap();
+        assert!(s.cache_get("k").unwrap().is_some());
     }
 
     #[tokio::test]

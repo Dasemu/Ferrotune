@@ -22,7 +22,10 @@ const MASK: &str = "[REDACTED]";
 /// so `barcode=` or `zip_code=` are left alone.
 const KEYS: &[&str] = &[
     "access_token",
+    "accessToken",
     "refresh_token",
+    "client-token",
+    "client_token",
     "code_verifier",
     "code",
     "auth_data",
@@ -295,7 +298,6 @@ mod tests {
             .finish();
         let tokens = TokenSet {
             access_token: Secret::new("BQDsecretAccess123"),
-            refresh_token: Some(Secret::new("AQDsecretRefresh456")),
             expires_at: 0,
             scope: String::new(),
         };
@@ -304,6 +306,7 @@ mod tests {
             // A third-party error that embeds a URL with a code and a header.
             tracing::warn!("callback GET /login?code=AQCsecretCode789&state=x");
             tracing::warn!("sent Authorization: Bearer BQDsecretAccess123");
+            tracing::warn!("client-token: AQDsecretRefresh456");
             tracing::info!(body = %crate::error::Redacted("my private search"), "search");
         });
         let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();

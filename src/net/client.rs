@@ -1,0 +1,463 @@
+//! HTTP client for Spotify's internal endpoints (spclient + pathfinder),
+//! authenticated by the librespot session.
+//!
+//! Everything the UI lists goes through here, the way the desktop client
+//! fetches it: `Authorization: Bearer <session token>`, the session's
+//! `client-token`, and the platform/version headers librespot announces.
+//! There is no stealth here: no TLS fingerprint games, no fake telemetry.
+//!
+//! Resilience rules (all covered by `tests/backend.rs`):
+//! * **Cache** — responses with a TTL are kept in SQLite (`http_cache`);
+//!   a fresh entry is served without a request, a stale one is served if
+//!   the network fails.
+//! * **Coalescing** — identical in-flight requests share one round trip.
+//! * **Concurrency cap** — at most [`MAX_CONCURRENT`] requests at once, so
+//!   opening a screen never produces a burst.
+//! * **429** — `Retry-After` is honoured (sleeping inline up to
+//!   [`MAX_INLINE_WAIT`], with exponential backoff when the header is
+//!   missing); longer waits put the whole client into a cooldown that fails
+//!   fast instead of hammering the server.
+//! * **401** — one single-flight token refresh, then an error.
+//! * **5xx** — one retry after a short pause.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use futures::FutureExt;
+use futures::future::{BoxFuture, Shared};
+use reqwest::{Method, StatusCode};
+use sha2::{Digest, Sha256};
+
+use super::tokens::{TokenCache, TokenSource};
+use crate::error::{Error, Result};
+use crate::store::Store;
+
+/// Longest server-requested wait we sleep through inside one request.
+pub const MAX_INLINE_WAIT: Duration = Duration::from_secs(10);
+/// Max attempts for one request (429 / 5xx retries included).
+pub const MAX_ATTEMPTS: u32 = 3;
+/// Parallel requests in flight.
+pub const MAX_CONCURRENT: usize = 4;
+
+/// What the session provides besides tokens.
+pub trait SessionAuth: TokenSource {
+    /// The `client-token` header value (librespot fetches and caches it).
+    fn client_token(&self) -> BoxFuture<'_, Result<Option<String>>>;
+    /// `https://<ap>-spclient.spotify.com:443`, resolved by librespot.
+    fn spclient_base(&self) -> BoxFuture<'_, Result<String>>;
+    fn username(&self) -> String;
+    fn country(&self) -> String;
+    /// Account type from the session's user attributes ("premium", ...).
+    fn product(&self) -> Option<String>;
+}
+
+/// Where a request goes.
+#[derive(Debug, Clone)]
+pub enum Target {
+    /// Path on the spclient host, e.g. `/playlist/v2/playlist/<id>`.
+    Spclient(String),
+    /// Path + query on the pathfinder host.
+    Pathfinder(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub method: Method,
+    pub target: Target,
+    pub body: Option<Vec<u8>>,
+    pub content_type: Option<&'static str>,
+    pub accept: &'static str,
+    /// Cache successful responses for this long (`None` = never cache).
+    pub ttl: Option<Duration>,
+}
+
+pub const PROTOBUF: &str = "application/x-protobuf";
+pub const JSON: &str = "application/json";
+pub const COLLECTION_PROTO: &str = "application/vnd.collection-v2.spotify.proto";
+
+impl Request {
+    pub fn get(target: Target, accept: &'static str) -> Self {
+        Self {
+            method: Method::GET,
+            target,
+            body: None,
+            content_type: None,
+            accept,
+            ttl: None,
+        }
+    }
+
+    pub fn post(target: Target, content_type: &'static str, body: Vec<u8>) -> Self {
+        Self {
+            method: Method::POST,
+            target,
+            body: Some(body),
+            content_type: Some(content_type),
+            accept: content_type,
+            ttl: None,
+        }
+    }
+
+    pub fn accept(mut self, accept: &'static str) -> Self {
+        self.accept = accept;
+        self
+    }
+
+    pub fn ttl(mut self, ttl: Duration) -> Self {
+        self.ttl = Some(ttl);
+        self
+    }
+
+    /// Stable key for caching and coalescing (never contains secrets).
+    pub fn key(&self) -> String {
+        let (host, path) = match &self.target {
+            Target::Spclient(p) => ("sp", p.as_str()),
+            Target::Pathfinder(p) => ("pf", p.as_str()),
+        };
+        let mut h = Sha256::new();
+        h.update(self.body.as_deref().unwrap_or_default());
+        let digest = h.finalize();
+        let body: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+        format!("{}:{host}:{path}#{body}", self.method)
+    }
+}
+
+/// Headers the desktop client sends, with the values librespot announces.
+#[derive(Debug, Clone)]
+pub struct ClientHeaders {
+    pub user_agent: String,
+    pub app_platform: &'static str,
+    pub app_version: String,
+    pub accept_language: String,
+}
+
+impl ClientHeaders {
+    pub fn from_environment() -> Self {
+        use librespot_core::version;
+        let app_platform = match std::env::consts::OS {
+            "macos" => "OSX",
+            "windows" => "Win32",
+            _ => "Linux",
+        };
+        Self {
+            // Same format as librespot's own HTTP client.
+            user_agent: format!(
+                "Spotify/{} {app_platform}/0 ({})",
+                version::spotify_version(),
+                version::VERSION_STRING
+            ),
+            app_platform,
+            app_version: version::spotify_semantic_version(),
+            accept_language: accept_language(std::env::var("LANG").ok().as_deref()),
+        }
+    }
+}
+
+/// `es_ES.UTF-8` -> `es-ES`; `C`/unset -> `en`.
+pub fn accept_language(lang: Option<&str>) -> String {
+    let tag = lang
+        .and_then(|l| l.split(['.', '@']).next())
+        .filter(|l| !l.is_empty() && *l != "C" && *l != "POSIX")
+        .map(|l| l.replace('_', "-"));
+    tag.unwrap_or_else(|| "en".into())
+}
+
+/// `Retry-After` in seconds; `None` when missing or unparsable.
+pub fn parse_retry_after(v: Option<&reqwest::header::HeaderValue>) -> Option<u64> {
+    v.and_then(|h| h.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+}
+
+/// How long to wait before retry `attempt` (1-based) after a 429.
+pub fn rate_limit_wait(retry_after: Option<u64>, attempt: u32) -> Duration {
+    match retry_after {
+        Some(s) => Duration::from_secs(s.max(1)),
+        // No header: 1 s, 2 s, 4 s, ...
+        None => Duration::from_secs(1u64 << attempt.saturating_sub(1).min(6)),
+    }
+}
+
+type SharedResponse = Shared<BoxFuture<'static, Result<Vec<u8>>>>;
+
+pub struct InternalClient {
+    http: reqwest::Client,
+    auth: Arc<dyn SessionAuth>,
+    tokens: TokenCache,
+    spclient_override: Option<String>,
+    pathfinder_base: String,
+    cache: Option<Store>,
+    headers: ClientHeaders,
+    inflight: Mutex<HashMap<String, SharedResponse>>,
+    limiter: tokio::sync::Semaphore,
+    cooldown_until: Mutex<Option<Instant>>,
+}
+
+impl InternalClient {
+    pub fn new(
+        http: reqwest::Client,
+        auth: Arc<dyn SessionAuth>,
+        spclient_override: Option<String>,
+        pathfinder_base: String,
+        cache: Option<Store>,
+    ) -> Self {
+        Self {
+            http,
+            auth,
+            tokens: TokenCache::new(),
+            spclient_override,
+            pathfinder_base,
+            cache,
+            headers: ClientHeaders::from_environment(),
+            inflight: Mutex::new(HashMap::new()),
+            limiter: tokio::sync::Semaphore::new(MAX_CONCURRENT),
+            cooldown_until: Mutex::new(None),
+        }
+    }
+
+    pub fn auth(&self) -> &Arc<dyn SessionAuth> {
+        &self.auth
+    }
+
+    /// Drop the cached token (the session was replaced).
+    pub async fn session_changed(&self) {
+        self.tokens.clear().await;
+    }
+
+    /// Remove cached responses whose key contains `needle` (after writes).
+    pub async fn invalidate(&self, needle: &'static str) {
+        if let Some(store) = &self.cache {
+            let _ = store.run(move |s| s.cache_invalidate(needle)).await;
+        }
+    }
+
+    /// Send a request with caching, coalescing and retries.
+    pub async fn send(self: &Arc<Self>, req: Request) -> Result<Vec<u8>> {
+        let key = req.key();
+        let cached = self.cache_lookup(&key, req.ttl).await;
+        if let Some((body, true)) = &cached {
+            return Ok(body.clone());
+        }
+        let shared = {
+            let mut map = self
+                .inflight
+                .lock()
+                .map_err(|_| Error::Net("request table poisoned".into()))?;
+            match map.get(&key) {
+                Some(s) => s.clone(),
+                None => {
+                    let this = self.clone();
+                    let k = key.clone();
+                    let r = req.clone();
+                    let fut: BoxFuture<'static, Result<Vec<u8>>> = Box::pin(async move {
+                        let out = this.send_uncached(&r).await;
+                        if let Ok(mut m) = this.inflight.lock() {
+                            m.remove(&k);
+                        }
+                        out
+                    });
+                    let s = fut.shared();
+                    map.insert(key.clone(), s.clone());
+                    s
+                }
+            }
+        };
+        match shared.await {
+            Ok(body) => {
+                if req.ttl.is_some()
+                    && let Some(store) = &self.cache
+                {
+                    let (k, b) = (key, body.clone());
+                    let _ = store.run(move |s| s.cache_put(&k, &b)).await;
+                }
+                Ok(body)
+            }
+            // Serve stale data rather than an error when offline / limited.
+            Err(e) if is_transient(&e) => match cached {
+                Some((body, _)) => {
+                    tracing::debug!(error = %e, "serving stale cached response");
+                    Ok(body)
+                }
+                None => Err(e),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn cache_lookup(&self, key: &str, ttl: Option<Duration>) -> Option<(Vec<u8>, bool)> {
+        let (store, ttl) = (self.cache.as_ref()?, ttl?);
+        let k = key.to_owned();
+        let (body, age) = store.run(move |s| s.cache_get(&k)).await.ok()??;
+        let fresh = u64::try_from(age).is_ok_and(|a| a < ttl.as_secs());
+        Some((body, fresh))
+    }
+
+    fn cooldown_left(&self) -> Option<Duration> {
+        let until = (*self.cooldown_until.lock().ok()?)?;
+        until.checked_duration_since(Instant::now())
+    }
+
+    fn start_cooldown(&self, d: Duration) {
+        if let Ok(mut c) = self.cooldown_until.lock() {
+            *c = Some(Instant::now() + d);
+        }
+    }
+
+    async fn url(&self, target: &Target) -> Result<String> {
+        Ok(match target {
+            Target::Spclient(p) => {
+                let base = match &self.spclient_override {
+                    Some(b) => b.clone(),
+                    None => self.auth.spclient_base().await?,
+                };
+                format!("{}{p}", base.trim_end_matches('/'))
+            }
+            Target::Pathfinder(p) => format!("{}{p}", self.pathfinder_base),
+        })
+    }
+
+    async fn send_uncached(&self, req: &Request) -> Result<Vec<u8>> {
+        let _permit = self.limiter.acquire().await.map_err(|_| Error::Cancelled)?;
+        if let Some(left) = self.cooldown_left() {
+            return Err(Error::RateLimited(left.as_secs().max(1)));
+        }
+        let url = self.url(&req.target).await?;
+        let source: &dyn TokenSource = self.auth.as_ref();
+        let mut token = self.tokens.get(source).await?;
+        let client_token = self.auth.client_token().await.unwrap_or(None);
+        let mut refreshed = false;
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let mut rb = self
+                .http
+                .request(req.method.clone(), &url)
+                .bearer_auth(token.expose())
+                .header(reqwest::header::USER_AGENT, &self.headers.user_agent)
+                .header(reqwest::header::ACCEPT, req.accept)
+                .header(
+                    reqwest::header::ACCEPT_LANGUAGE,
+                    &self.headers.accept_language,
+                )
+                .header("app-platform", self.headers.app_platform)
+                .header("spotify-app-version", &self.headers.app_version);
+            if let Some(ct) = &client_token {
+                rb = rb.header("client-token", ct);
+            }
+            if let Some(ct) = req.content_type {
+                rb = rb.header(reqwest::header::CONTENT_TYPE, ct);
+            }
+            rb = match &req.body {
+                Some(b) => rb.body(b.clone()),
+                None if req.method != Method::GET => {
+                    rb.header(reqwest::header::CONTENT_LENGTH, "0")
+                }
+                None => rb,
+            };
+            let resp = rb.send().await?;
+            let status = resp.status();
+            tracing::debug!(method = %req.method, status = status.as_u16(), "internal api");
+            if status.is_success() {
+                return Ok(resp.bytes().await?.to_vec());
+            }
+            match status {
+                StatusCode::UNAUTHORIZED if !refreshed => {
+                    refreshed = true;
+                    token = self.tokens.refresh_after(source, &token).await?;
+                }
+                StatusCode::UNAUTHORIZED => {
+                    return Err(Error::auth("Spotify refused the session token."));
+                }
+                StatusCode::TOO_MANY_REQUESTS => {
+                    let wait = rate_limit_wait(
+                        parse_retry_after(resp.headers().get(reqwest::header::RETRY_AFTER)),
+                        attempt,
+                    );
+                    if wait > MAX_INLINE_WAIT || attempt >= MAX_ATTEMPTS {
+                        self.start_cooldown(wait);
+                        return Err(Error::RateLimited(wait.as_secs().max(1)));
+                    }
+                    tracing::info!(wait_s = wait.as_secs(), "rate limited; backing off");
+                    tokio::time::sleep(wait).await;
+                }
+                s if s.is_server_error() && attempt < 2 => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                s => {
+                    return Err(Error::Http {
+                        status: s.as_u16(),
+                        message: s.canonical_reason().unwrap_or("error").to_owned(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn is_transient(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Net(_)
+            | Error::RateLimited(_)
+            | Error::Http {
+                status: 500..=599,
+                ..
+            }
+    )
+}
+
+/// The plain HTTP client (rustls, timeouts). Image CDN fetches use it too.
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_after_and_backoff() {
+        let h = reqwest::header::HeaderValue::from_static("7");
+        assert_eq!(parse_retry_after(Some(&h)), Some(7));
+        let h = reqwest::header::HeaderValue::from_static("soon");
+        assert_eq!(parse_retry_after(Some(&h)), None);
+        assert_eq!(rate_limit_wait(Some(7), 1), Duration::from_secs(7));
+        assert_eq!(rate_limit_wait(Some(0), 1), Duration::from_secs(1));
+        assert_eq!(rate_limit_wait(None, 1), Duration::from_secs(1));
+        assert_eq!(rate_limit_wait(None, 2), Duration::from_secs(2));
+        assert_eq!(rate_limit_wait(None, 3), Duration::from_secs(4));
+        assert_eq!(rate_limit_wait(None, 99), Duration::from_secs(64));
+    }
+
+    #[test]
+    fn accept_language_from_locale() {
+        assert_eq!(accept_language(Some("es_ES.UTF-8")), "es-ES");
+        assert_eq!(accept_language(Some("de_DE@euro")), "de-DE");
+        assert_eq!(accept_language(Some("C")), "en");
+        assert_eq!(accept_language(None), "en");
+    }
+
+    #[test]
+    fn headers_match_librespot() {
+        let h = ClientHeaders::from_environment();
+        assert!(h.user_agent.starts_with("Spotify/"));
+        assert_eq!(
+            h.app_version,
+            librespot_core::version::SPOTIFY_SEMANTIC_VERSION
+        );
+    }
+
+    #[test]
+    fn request_keys_differ_by_body_and_target() {
+        let a = Request::post(Target::Spclient("/x".into()), PROTOBUF, vec![1]);
+        let b = Request::post(Target::Spclient("/x".into()), PROTOBUF, vec![2]);
+        let c = Request::get(Target::Pathfinder("/x".into()), JSON);
+        assert_ne!(a.key(), b.key());
+        assert_ne!(a.key(), c.key());
+        assert_eq!(a.key(), a.clone().key());
+    }
+}
