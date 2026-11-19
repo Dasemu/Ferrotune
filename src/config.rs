@@ -160,10 +160,12 @@ impl Config {
             state_dir: paths.state_dir,
             config_dir: paths.config_dir,
             accounts_base: SPOTIFY_ACCOUNTS.into(),
-            spclient_base: env.spclient.map(|u| u.trim_end_matches('/').to_owned()),
+            spclient_base: env
+                .spclient
+                .and_then(|u| safe_endpoint("FERROTUNE_SPCLIENT_URL", &u)),
             pathfinder_base: env
                 .pathfinder
-                .map(|u| u.trim_end_matches('/').to_owned())
+                .and_then(|u| safe_endpoint("FERROTUNE_PATHFINDER_URL", &u))
                 .unwrap_or_else(|| SPOTIFY_PATHFINDER.into()),
             mock,
             trace_startup,
@@ -221,6 +223,34 @@ struct Env {
     connect: Option<bool>,
     spclient: Option<String>,
     pathfinder: Option<String>,
+}
+
+/// Endpoint overrides receive the session token, so only `https://` is
+/// accepted, plus plain `http://` to a loopback address (local test
+/// servers). Anything else is ignored with a warning.
+pub fn safe_endpoint(var: &str, raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    let ok = url::Url::parse(trimmed)
+        .ok()
+        .is_some_and(|u| match u.scheme() {
+            "https" => u.host().is_some(),
+            "http" => match u.host() {
+                Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                None => false,
+            },
+            _ => false,
+        });
+    if ok {
+        Some(trimmed.to_owned())
+    } else {
+        tracing::warn!(
+            var,
+            "ignoring endpoint override: must be https:// (or http:// on loopback)"
+        );
+        None
+    }
 }
 
 /// Name shown in the Spotify Connect device picker.
@@ -342,6 +372,22 @@ mod tests {
         assert_eq!(c.theme, ThemeChoice::Dark);
         assert_eq!(c.bitrate, Bitrate::Normal);
         assert_eq!(c.db_path(), PathBuf::from("/d/cache.sqlite3"));
+    }
+
+    #[test]
+    fn endpoint_overrides_must_be_https_or_loopback() {
+        let ok = |u: &str| safe_endpoint("X", u);
+        assert_eq!(
+            ok("https://spclient.example/").as_deref(),
+            Some("https://spclient.example")
+        );
+        assert!(ok("http://127.0.0.1:9999").is_some());
+        assert!(ok("http://localhost:1").is_some());
+        assert!(ok("http://[::1]:1").is_some());
+        assert!(ok("http://evil.example").is_none());
+        assert!(ok("http://10.0.0.1").is_none());
+        assert!(ok("ftp://x").is_none());
+        assert!(ok("garbage").is_none());
     }
 
     #[test]
