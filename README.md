@@ -125,6 +125,54 @@ Behind the scenes:
   bursts, but nothing can guarantee that you will not be rate-limited or that
   your account will not be flagged.
 
+## Playing audio on this computer: Spotify Soloist
+
+For some (mostly newer) accounts Spotify refuses the audio keys that
+librespot uses ("error audio key 0 1", librespot issue #1649). No
+client-side fix exists. For those accounts Ferrotune plays through
+**[Spotify Soloist](https://developer.spotify.com/documentation/soloist)**,
+Spotify's official headless Spotify Connect player, which decrypts audio
+itself. Ferrotune keeps doing everything else (library, search, Home,
+lyrics, the device picker) and drives Soloist like the official app drives a
+speaker.
+
+Setup, once:
+
+1. Ferrotune shows a card ("Play music on this computer") when Spotify
+   refuses local playback, or turn on **Settings → Playback → Play with
+   Spotify Soloist**.
+2. Click **Get API key**. Your browser opens the
+   [Spotify Soloist API Key](https://developer.spotify.com/dashboard/soloist)
+   page of Spotify for Developers. Log in, accept the terms if asked and
+   generate a key (Premium is required). Copy it.
+3. Paste it into the card and click **Save**. The key goes into the system
+   keyring only, never into a file or a log.
+4. Ferrotune downloads Soloist **from Spotify's own server**
+   (`soloist-builds.spotifycdn.com`, the URL in Spotify's documentation) the
+   first time and starts it. Soloist is **never bundled** with Ferrotune and
+   never redistributed: Spotify's terms forbid that, so every user downloads
+   it from Spotify.
+5. Pair once: open Spotify on your phone, tap the devices icon and choose
+   "Ferrotune on &lt;your computer&gt;". The card disappears and music
+   plays on this computer from then on, also after restarts.
+
+Good to know:
+
+- Soloist builds expire 90 days after their build date. Ferrotune checks
+  Spotify's server for a newer build every day (every 6 hours in the last
+  two weeks) and replaces it; **Update now** in Settings does it at once.
+- Soloist runs as a separate process (stopped when Ferrotune quits). Its
+  memory use is shown in Settings → Playback.
+- **Output device** in Settings takes a PipeWire node name or id; empty means
+  the system default.
+- Soloist's audio cache is capped at 500 MB (`"soloist_cache_mb"` in
+  `config.json`, at least 100).
+- Soloist needs PipeWire or PulseAudio on Linux, and the phone must be on the
+  same network for the one-time pairing.
+- Builds exist for Linux x86_64 / arm64 / armv7 and Apple Silicon macOS.
+- While Soloist is on, Ferrotune does not announce its own Connect device,
+  so your phone sees one "Ferrotune" device: Soloist.
+
 ## Build and run
 
 Requirements: Rust stable (edition 2024), and on Linux the dev packages
@@ -205,6 +253,7 @@ against `wiremock` with protobuf/JSON fixtures. See
 | ![Login](docs/screenshots/login.png) | ![Home](docs/screenshots/home.png) |
 | ![Playlist](docs/screenshots/playlist.png) | ![Search](docs/screenshots/search.png) |
 | ![Lyrics](docs/screenshots/lyrics.png) | ![Spotify Connect](docs/screenshots/connect.png) |
+| ![Soloist setup](docs/screenshots/soloist.png) | ![Settings, Spotify Soloist](docs/screenshots/soloist-settings.png) |
 
 ## License
 

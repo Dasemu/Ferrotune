@@ -367,6 +367,21 @@ pub fn connect_strip(_: &Theme) -> container::Style {
     }
 }
 
+/// Spotify Soloist setup card (top of the main panel).
+pub fn setup_card(_: &Theme) -> container::Style {
+    let p = pal();
+    container::Style {
+        background: Some(p.bg_elevated.into()),
+        text_color: Some(p.text_primary),
+        border: Border {
+            radius: radius(8.0),
+            width: 1.0,
+            color: mix(p.bg_elevated, p.accent, 0.35),
+        },
+        ..Default::default()
+    }
+}
+
 /// Persistent playback error banner.
 pub fn error_banner(_: &Theme) -> container::Style {
     let p = pal();

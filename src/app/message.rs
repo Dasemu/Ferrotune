@@ -106,6 +106,7 @@ pub enum Ui {
     DismissBanner,
     ToggleUserMenu,
     Setting(super::settings::SettingChange),
+    Soloist(super::soloist::SoloistUi),
     // window and tray
     /// The window's close button (or Alt+F4).
     CloseRequested,
@@ -120,6 +121,7 @@ pub enum Ui {
 pub enum Net {
     Playback(PlaybackEvent),
     Media(MediaEvent),
+    Soloist(crate::net::soloist::SoloistEvent),
 }
 
 /// A signed-in session ready for use.
@@ -174,6 +176,9 @@ pub enum Done {
     Screenshot(iced::window::Screenshot),
     ScreenshotSaved(Result<()>),
     Quit,
+    /// The Soloist API key from the keyring (`None` = not set).
+    SoloistKey(Result<Option<crate::auth::secrets::Secret>>),
+    SoloistKeySaved(Result<crate::auth::secrets::Secret>),
     Noop,
 }
 

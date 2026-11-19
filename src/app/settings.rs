@@ -127,10 +127,21 @@ impl App {
                     .report(super::state::PlayStatus::Paused, pos, self.now);
             }
         }
-        if fx.next_session {
+        if c == SettingChange::DeviceNameCommit && self.soloist_enabled() {
+            // Soloist's device name: restart it with the new one.
+            self.soloist_configure();
+        } else if fx.next_session {
             self.show_toast("Applies the next time Ferrotune connects to Spotify.");
         }
-        if !fx.save || self.is_mock() {
+        if !fx.save {
+            return Task::none();
+        }
+        self.save_settings()
+    }
+
+    /// Persist the settings to `config.json` (not in mock mode).
+    pub(super) fn save_settings(&self) -> Task<Message> {
+        if self.is_mock() {
             return Task::none();
         }
         let settings = self.settings.clone();

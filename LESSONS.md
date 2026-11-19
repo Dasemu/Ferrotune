@@ -2,6 +2,20 @@
 
 Things learned while building Ferrotune. Add new entries at the top.
 
+- **When the key path is closed, use the official player.** Spotify Soloist
+  decrypts audio itself and is driven over a local WebSocket, so Ferrotune
+  stays a controller with one Connect device ("Ferrotune on <host>").
+  Two rules made it work: never bundle Spotify's binary (download it from
+  their CDN on the user's machine), and route by device id at one choke
+  point (`App::connect_task` → `soloist_intercept`) instead of sprinkling
+  "is Soloist?" checks over every transport handler.
+- **The dealer does not need Spirc.** The connect-state observer only needs
+  a dealer connection id; `dealer().listen_for("hm://pusher/v1/connections/")`
+  plus `dealer().start()` gives one without announcing a playable device.
+- **Undocumented output needs lenient parsers and a fallback, then a
+  fixture from the real thing.** The guessed `--version` layout (ISO date)
+  was wrong: 1.3.10 prints `(YYYYMMDD)`. Keep the real line as a unit-test
+  fixture, and keep the `Last-Modified` fallback for the 90-day expiry.
 - **Use `ksni` with `async-io`, not its default `tokio` feature.** `ksni/tokio`
   turns on `zbus/tokio` for the whole build, and then keyring's blocking
   Secret Service connect panics ("Cannot start a runtime from within a

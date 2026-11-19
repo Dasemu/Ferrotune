@@ -3,6 +3,9 @@
 //! Stored entries (service `dev.ferro.ferrotune`):
 //! * `librespot` — JSON with librespot's reusable credentials blob. This is
 //!   the only credential Ferrotune keeps.
+//! * `soloist-api-key` — the user's personal Spotify Soloist API key
+//!   (Spotify for Developers dashboard), passed to the Soloist daemon at
+//!   start. Never written to config, cache or logs.
 //! * `oauth` — legacy (v0.1/v0.2 Web API tokens); deleted on sight.
 
 use std::collections::HashMap;
@@ -17,6 +20,16 @@ use crate::error::{Error, Result};
 /// Legacy entry from the Web-API-based releases; only ever deleted.
 pub const KEY_LEGACY_OAUTH: &str = "oauth";
 pub const KEY_LIBRESPOT: &str = "librespot";
+pub const KEY_SOLOIST: &str = "soloist-api-key";
+
+/// Clean up a pasted Soloist API key: trims whitespace and quotes. `None`
+/// when it cannot be a key (empty, too long, spaces or control characters
+/// inside). The format is not documented, so nothing stricter is checked.
+pub fn normalize_api_key(raw: &str) -> Option<Secret> {
+    let k = raw.trim().trim_matches(|c| c == '"' || c == '\'');
+    let ok = (8..=512).contains(&k.len()) && k.chars().all(|c| c.is_ascii_graphic());
+    ok.then(|| Secret::new(k))
+}
 
 /// A secret value. Zeroised on drop, never printed.
 #[derive(Clone)]
@@ -162,6 +175,18 @@ mod tests {
         assert_eq!(s.get("k").unwrap().unwrap().expose(), "v");
         s.delete("k").unwrap();
         assert!(s.get("k").unwrap().is_none());
+    }
+
+    #[test]
+    fn api_keys_are_normalised() {
+        assert_eq!(
+            normalize_api_key("  \"abcdEFGH1234\"\n").unwrap().expose(),
+            "abcdEFGH1234"
+        );
+        assert!(normalize_api_key("short").is_none());
+        assert!(normalize_api_key("has a space inside").is_none());
+        assert!(normalize_api_key(&"x".repeat(600)).is_none());
+        assert!(normalize_api_key("tab\tinside-key").is_none());
     }
 
     #[test]

@@ -10,7 +10,7 @@ default-run = "ferrotune"
 
 [dependencies]
 iced = { version = "0.14", features = ["tokio", "image", "advanced", "svg"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "process"] }
 librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
 librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots", "rodio-backend"] }
 librespot-metadata = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
@@ -34,6 +34,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 futures = "0.3"
 librespot-connect = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
 protobuf = "3.7"
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect"] }
+flate2 = "1"
+httpdate = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.9"
@@ -41,6 +44,9 @@ mpris-server = "0.9"
 ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
 # Renders the bundled SVG icon to ARGB pixmaps; already compiled for iced's svg.
 resvg = { version = "0.45", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # Fake StatusNotifierWatcher for the tray integration test (same zbus as ksni).
