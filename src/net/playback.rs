@@ -53,6 +53,10 @@ pub enum PlaybackCommand {
     Pause,
     Stop,
     Seek(u32),
+    /// Start fetching the next track so it can start without a gap.
+    Preload {
+        uri: String,
+    },
     /// 0.0..=1.0
     SetVolume(f32),
     /// Control the Spotify Connect playback (while another device cast to us).
@@ -142,6 +146,8 @@ pub enum PlaybackEvent {
         position_ms: u32,
     },
     Stopped,
+    /// The player suggests preloading the next track now.
+    PreloadNext,
     EndOfTrack {
         uri: String,
     },
@@ -196,7 +202,9 @@ impl MockEngine {
     /// Apply a command, returning events to emit.
     pub fn command(&mut self, cmd: PlaybackCommand) -> Vec<PlaybackEvent> {
         match cmd {
-            PlaybackCommand::Attach(_) | PlaybackCommand::Remote(_) => vec![],
+            PlaybackCommand::Attach(_)
+            | PlaybackCommand::Remote(_)
+            | PlaybackCommand::Preload { .. } => vec![],
             PlaybackCommand::Load {
                 uri,
                 duration_ms,
@@ -348,6 +356,7 @@ fn map_player_event(e: librespot_playback::player::PlayerEvent) -> Option<Playba
             uri: uri_string(&track_id),
         },
         P::Stopped { .. } => PlaybackEvent::Stopped,
+        P::TimeToPreloadNextTrack { .. } => PlaybackEvent::PreloadNext,
         _ => return None,
     })
 }
@@ -598,6 +607,11 @@ async fn run_librespot(
                     PlaybackCommand::Pause => p.pause(),
                     PlaybackCommand::Stop => p.stop(),
                     PlaybackCommand::Seek(ms) => p.seek(ms),
+                    PlaybackCommand::Preload { uri } => {
+                        if let Ok(u) = librespot_core::SpotifyUri::from_uri(&uri) {
+                            p.preload(u);
+                        }
+                    }
                     PlaybackCommand::Attach(_)
                     | PlaybackCommand::SetVolume(_)
                     | PlaybackCommand::Remote(_) => {}

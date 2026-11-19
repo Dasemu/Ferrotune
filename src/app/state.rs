@@ -485,6 +485,35 @@ impl Queue {
         Some(t)
     }
 
+    /// The track `next(true)` would play, without moving anything: used to
+    /// preload it for gapless playback. `None` when it cannot be known
+    /// (repeat-one, or a shuffle round that would be reshuffled).
+    pub fn peek_next(&self) -> Option<&Track> {
+        if self.repeat == Repeat::Track {
+            return None;
+        }
+        if let Some(t) = self.user_queue.front() {
+            return Some(t);
+        }
+        if let Some(t) = self
+            .order
+            .iter()
+            .skip(self.pos + 1)
+            .map(|&i| &self.tracks[i])
+            .find(|t| t.playable)
+        {
+            return Some(t);
+        }
+        if self.repeat == Repeat::Context && !self.shuffle {
+            return self
+                .order
+                .iter()
+                .map(|&i| &self.tracks[i])
+                .find(|t| t.playable);
+        }
+        None
+    }
+
     pub fn has_next(&self) -> bool {
         !self.user_queue.is_empty()
             || self.repeat != Repeat::Off && !self.order.is_empty()
@@ -871,6 +900,28 @@ mod tests {
             let first_of_new_round = q.next(true).unwrap();
             assert_ne!(first_of_new_round.id, last.id, "seed {seed}");
         }
+    }
+
+    #[test]
+    fn peek_next_matches_what_next_plays() {
+        let mut q = Queue::with_seed(1);
+        q.play_context(ctx(), tracks(3), Some(0));
+        assert_eq!(q.peek_next().map(|t| t.id.clone()), Some("t1".into()));
+        q.enqueue(t("queued"));
+        assert_eq!(q.peek_next().map(|t| t.id.clone()), Some("queued".into()));
+        let peeked = q.peek_next().cloned();
+        assert_eq!(q.next(true), peeked);
+        let peeked = q.peek_next().cloned();
+        assert_eq!(q.next(true), peeked);
+        // Last track: nothing, unless the context repeats.
+        q.next(true);
+        assert!(q.peek_next().is_none());
+        q.cycle_repeat();
+        assert_eq!(q.repeat, Repeat::Context);
+        assert_eq!(q.peek_next().map(|t| t.id.clone()), Some("t0".into()));
+        q.cycle_repeat();
+        assert_eq!(q.repeat, Repeat::Track);
+        assert!(q.peek_next().is_none());
     }
 
     #[test]

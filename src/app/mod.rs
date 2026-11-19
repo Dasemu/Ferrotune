@@ -1363,6 +1363,16 @@ impl App {
                     self.advance(false);
                 }
             }
+            PlaybackEvent::PreloadNext => {
+                // Gapless playback: fetch the next track now, so it starts
+                // the moment this one ends.
+                if self.remote.is_none()
+                    && let Some(t) = self.queue.peek_next()
+                {
+                    let uri = t.uri.clone();
+                    self.engine_send(PlaybackCommand::Preload { uri });
+                }
+            }
             PlaybackEvent::SessionLost => return self.on_session_lost(),
             PlaybackEvent::Remote(ev) => self.on_remote(ev),
             PlaybackEvent::Stopped => {
@@ -2700,6 +2710,28 @@ mod tests {
         ))));
         assert!((app.playback.volume - 0.25).abs() < 1e-6);
         assert_eq!(app.media_snapshot().loop_status, MediaLoop::Track);
+    }
+
+    #[test]
+    fn preload_event_sends_the_next_track_to_the_engine() {
+        let (mut app, mut rx, tracks) = real_app_playing();
+        let _ = app.update(ui(Ui::PlayFrom(
+            TrackSource::Playlist("pl01".into()),
+            Some(0),
+        )));
+        while rx.try_recv().is_ok() {}
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::PreloadNext)));
+        match rx.try_recv() {
+            Ok(PlaybackCommand::Preload { uri }) => assert_eq!(uri, tracks[1].uri),
+            other => panic!("expected a preload, got {other:?}"),
+        }
+        // Repeat-one has nothing different to preload.
+        let _ = app.update(ui(Ui::CycleRepeat));
+        let _ = app.update(ui(Ui::CycleRepeat));
+        assert_eq!(app.queue.repeat, Repeat::Track);
+        while rx.try_recv().is_ok() {}
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::PreloadNext)));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
