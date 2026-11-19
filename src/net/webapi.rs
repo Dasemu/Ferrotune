@@ -314,14 +314,33 @@ impl WebApi {
         Ok((pl, page))
     }
 
+    /// One page of a playlist's entries.
+    ///
+    /// Uses `/playlists/{id}/tracks`; if that is refused (404/403, e.g. an
+    /// API revision that renamed it to `/items`), retries `/items` once and
+    /// otherwise reports a clear error instead of an empty playlist.
     pub async fn playlist_tracks(&self, id: &str, offset: u32) -> Result<Page<Track>> {
-        let p: wire::Paging<wire::SavedTrack> = self
-            .get(
-                &format!("/playlists/{id}/tracks"),
-                &[("limit", "100".into()), ("offset", offset.to_string())],
-            )
-            .await?;
-        Ok(p.into_page(wire::SavedTrack::into_model))
+        let q = [("limit", "100".to_owned()), ("offset", offset.to_string())];
+        let first: Result<wire::Paging<wire::SavedTrack>> =
+            self.get(&format!("/playlists/{id}/tracks"), &q).await;
+        let page = match first {
+            Err(Error::Http {
+                status: 403 | 404, ..
+            }) => self
+                .get::<wire::Paging<wire::SavedTrack>>(&format!("/playlists/{id}/items"), &q)
+                .await
+                .map_err(|e| match e {
+                    Error::Http { status, .. } => Error::Http {
+                        status,
+                        message: "Spotify did not allow reading this playlist's tracks \
+                                  (endpoint unavailable for this app)"
+                            .into(),
+                    },
+                    other => other,
+                })?,
+            other => other?,
+        };
+        Ok(page.into_page(wire::SavedTrack::into_model))
     }
 
     pub async fn album(&self, id: &str) -> Result<Album> {

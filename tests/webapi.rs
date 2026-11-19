@@ -469,3 +469,36 @@ async fn concurrent_401s_refresh_only_once() {
     let (a, b, c) = tokio::join!(api.me(), api.me(), api.me());
     assert!(a.is_ok() && b.is_ok() && c.is_ok());
 }
+
+#[tokio::test]
+async fn playlist_tracks_falls_back_to_items_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/playlists/p/tracks"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    json(&server, "/playlists/p/items", "playlist_tracks_100.json").await;
+    let api = client(&server, tokens("tok", 3600), None);
+    let page = api.playlist_tracks("p", 100).await.unwrap();
+    assert_eq!(page.items[0].id, "track7");
+
+    // Both refused: a clear error, not an empty list.
+    Mock::given(method("GET"))
+        .and(path("/playlists/q/tracks"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/playlists/q/items"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    match api.playlist_tracks("q", 0).await.unwrap_err() {
+        Error::Http {
+            status: 403,
+            message,
+        } => assert!(message.contains("unavailable")),
+        other => panic!("{other:?}"),
+    }
+}
