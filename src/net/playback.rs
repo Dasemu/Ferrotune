@@ -366,6 +366,15 @@ pub fn player_config(bitrate: BitrateKey) -> librespot_playback::config::PlayerC
     }
 }
 
+/// Does this Connect-player event mean another device is casting to us?
+pub fn starts_cast(e: &librespot_playback::player::PlayerEvent) -> bool {
+    use librespot_playback::player::PlayerEvent as P;
+    matches!(
+        e,
+        P::TrackChanged { .. } | P::Loading { .. } | P::Playing { .. }
+    )
+}
+
 /// Map an event of the Connect device's player.
 pub fn map_remote_event(e: librespot_playback::player::PlayerEvent) -> Option<RemoteEvent> {
     use librespot_metadata::audio::UniqueFields;
@@ -457,17 +466,22 @@ async fn run_librespot(
                     None => std::future::pending().await,
                 }
             } => {
-                if let Some(r) = ev.and_then(map_remote_event) {
-                    match &r {
-                        RemoteEvent::Playing { .. } => {
-                            // The phone cast to us: the local queue yields.
-                            if !remote_active && let Some(p) = &player {
-                                p.pause();
-                            }
-                            remote_active = true;
-                        }
-                        RemoteEvent::Stopped => remote_active = false,
-                        _ => {}
+                let Some(ev) = ev else {
+                    remote_events = None;
+                    continue;
+                };
+                if starts_cast(&ev) {
+                    // A cast is starting: from the first TrackChanged /
+                    // Loading / Playing the Connect stream owns the output,
+                    // so the local queue yields at once.
+                    if !remote_active && let Some(p) = &player {
+                        p.pause();
+                    }
+                    remote_active = true;
+                }
+                if let Some(r) = map_remote_event(ev) {
+                    if r == RemoteEvent::Stopped {
+                        remote_active = false;
                     }
                     if ev_tx.send(PlaybackEvent::Remote(r)).is_err() {
                         return;
