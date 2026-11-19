@@ -260,11 +260,27 @@ protobuf, pathfinder GraphQL, over `reqwest`). The public Web API is not used.
 | `net/` | `session.rs` (librespot session, Connect device, `LiveAuth`), `client.rs` (authenticated HTTP: cache, coalescing, 429/401 handling), `tokens.rs`, `backend.rs` (Catalog/Library/Search/Home/Lyrics traits), `spclient.rs`, `pathfinder.rs`, `proto.rs` (collection2v2 codec), `types.rs` (wire → domain), `model.rs`, `paging.rs`, `playlist_edit.rs` (playlist4 change bodies), `playback.rs` (local + Connect players, mock engine), `mpris.rs`, `images.rs` |
 | `store/` | `mod.rs`, `schema.sql` (`entity` JSON blobs by kind/id, `kv` settings), `schema_v2.sql` (`http_cache`) |
 | `auth/` | `mod.rs` (AuthState: silent login → browser fallback), `oauth.rs` (PKCE, loopback listener, code exchange), `secrets.rs` |
+| `tray/` | `model.rs` (tray state + `Command`, pure), `sni.rs` (StatusNotifierItem via `ksni`, Linux), `stub.rs` (other OSes: no tray, not implemented), `icon.rs` (app SVG to ARGB pixmaps), `instance.rs` (single-instance Unix socket), `autostart.rs` (XDG autostart entry) |
 | other | `desktop.rs` (.desktop entry + icon installer) |
+
+**Tray and background mode.** The app is an `iced::daemon`. Closing the
+window (with a StatusNotifierWatcher present and "close to tray" on) CLOSES
+it, freeing the renderer; `app/window.rs` is the pure window state machine,
+`app/background.rs` turns its `Action`s into iced window tasks. The librespot
+session, Connect device, playback engine and MPRIS live in `App`, not in the
+window, so they keep running while hidden. The tray menu (Show/Hide,
+Play/Pause, Next, Previous, Start minimized, Quit) sends the same `Ui`
+messages as the player bar, so with a Connect device in control they control
+that device. Scroll over the icon steps the volume. No tray host on the bus
+means closing quits. `--minimized` starts with only the tray; a second launch
+asks the running instance (socket in `$XDG_RUNTIME_DIR`) to show its window.
+Settings: close to tray and start minimized live in `config.json`; "open at
+login" is the existence of `~/.config/autostart/dev.ferro.ferrotune.desktop`.
 
 **Long-lived subscriptions.** Playback engine events
 (`Subscription::run_with(EngineKind, ..)`), MPRIS commands (Linux), a 500 ms
-tick only while playing or a toast is visible.
+tick only while playing or a toast is visible (and the window is shown), the
+tray (`tray::events`) and single-instance "show" requests.
 
 **Screens and navigation.**
 

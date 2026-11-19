@@ -28,6 +28,14 @@ use crate::app::{App, Message, Ui, ui};
 use theme::M;
 use widgets::{El, icon, primary};
 
+/// Id of the main panel's scrollable (screenshots scroll it).
+pub const MAIN_SCROLL: iced::widget::Id = iced::widget::Id::new("main-scroll");
+
+/// `iced::daemon` view: there is only ever the main window.
+pub fn view_window(app: &App, _window: iced::window::Id) -> Element<'_, Message> {
+    view(app)
+}
+
 pub fn view(app: &App) -> Element<'_, Message> {
     app.mark_frame();
     // The theme can change on the Settings screen.
@@ -142,6 +150,7 @@ fn main_panel(app: &App) -> El<'_> {
         Route::Settings => settings::view(app),
     };
     let scroll = scrollable(content)
+        .id(MAIN_SCROLL)
         .on_scroll(|v| ui(Ui::Scrolled(v.relative_offset().y)))
         .style(theme::thin_scroll)
         .height(Length::Fill)

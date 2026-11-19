@@ -1,6 +1,6 @@
 [package]
 name = "ferrotune"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Lightweight native Spotify desktop client written in Rust (unofficial)"
@@ -37,8 +37,15 @@ protobuf = "3.7"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.9"
+# StatusNotifierItem tray (pure Rust over the zbus already in the tree).
+ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
+# Renders the bundled SVG icon to ARGB pixmaps; already compiled for iced's svg.
+resvg = { version = "0.45", default-features = false }
 
 [dev-dependencies]
+# Fake StatusNotifierWatcher for the tray integration test (same zbus as ksni).
+zbus = "5"
+tempfile = "3"
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 
