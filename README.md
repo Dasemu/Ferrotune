@@ -24,6 +24,34 @@ now-playing bar).
 [librespot](https://github.com/librespot-org/librespot), which only works for
 Premium accounts.
 
+## Install / update
+
+Linux x86_64, no root needed. One command installs and updates (it downloads
+the latest [release](https://github.com/Dasemu/Ferrotune/releases/latest), checks
+its SHA-256 and puts the binary, menu entry and icon under `~/.local`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Dasemu/Ferrotune/main/install.sh | sh
+```
+
+Uninstall (removes only what the installer added, never your account data):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Dasemu/Ferrotune/main/install.sh | sh -s -- --uninstall
+```
+
+Manual alternative: download `ferrotune-vX.Y.Z-linux-x86_64.tar.gz` and its
+`.sha256` from the Releases page, then:
+
+```sh
+sha256sum -c ferrotune-*-linux-x86_64.tar.gz.sha256
+tar xzf ferrotune-*-linux-x86_64.tar.gz
+./ferrotune-*-linux-x86_64/ferrotune
+```
+
+The tarball also has `packaging/dev.ferro.ferrotune.desktop` and `.svg` if you want
+a menu entry. Releases are built on Ubuntu 22.04 (glibc 2.35).
+
 ## Features
 
 - Zero-configuration login: click **Log in**, approve in the browser, done.
