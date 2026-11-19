@@ -36,6 +36,17 @@ Premium accounts.
 - **Spotify Connect:** Ferrotune shows up as "Ferrotune on &lt;hostname&gt;"
   in the phone app and other Spotify clients, which can cast to it and
   control it.
+- **Keyboard shortcuts** like the desktop client (press `Ctrl+/` or `?` for
+  the list): Space play/pause, Ctrl+Left/Right previous/next, Ctrl+Up/Down
+  volume, Ctrl+L or Ctrl+K search, Ctrl+S shuffle, Ctrl+R repeat,
+  Alt+Left/Right back/forward, Ctrl+Q quit.
+- **Context menus** (right click) on tracks, albums, artists and playlists:
+  add to queue, go to artist/album, like, add to playlist, remove from this
+  playlist, copy link.
+- **Playlist editing:** create (the + in Your Library), rename, delete, add,
+  remove and drag to reorder tracks in your own playlists. Changes show at
+  once and are undone if Spotify refuses them.
+- Gapless playback: the next track is preloaded before the current one ends.
 - MPRIS (`org.mpris.MediaPlayer2` + `.Player`) on Linux, so KDE media keys and
   the Plasma media widget work.
 - SQLite cache: the first frame is drawn from cached data without network,

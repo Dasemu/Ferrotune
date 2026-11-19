@@ -2,6 +2,18 @@
 
 Things learned while building Ferrotune. Add new entries at the top.
 
+- **`mouse_area` reports no window position.** Its `on_move` point is local to
+  the widget and its right-press carries nothing, so a context menu needs a
+  tiny wrapper widget (`ui/context_area.rs`) that reads `cursor.position()`.
+- **A release only reaches the widget under the cursor.** Drag-and-drop
+  reordering therefore puts `on_release` on every row (the drop target) and a
+  global mouse-up subscription, active only while dragging, to cancel strays.
+- **Scroll events fire at layout time.** A "close on any action" rule must
+  exempt `Scrolled`, and an open menu's backdrop swallows the wheel instead.
+- **Edit by revision, not by guess.** playlist4 changes need the list's
+  current revision; fetching it uncached right before each write avoids
+  stale-base conflicts, and cached reads must be dropped after the write.
+
 - **Sync releases back with a real merge.** A separate `chore(release)` commit
   on development edits the same version lines as the bump on main, so every
   later development→main PR conflicts. Merging main into development

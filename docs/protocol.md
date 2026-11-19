@@ -95,6 +95,9 @@ host: `https://api-partner.spotify.com`. Both can be overridden for tests
 | `LibraryApi::contains_saved` | heart state | answered from the synced collection index, with no request | — |
 | `CatalogApi::playlist(_tracks)` | playlist + entries | `GET /playlist/v2/playlist/{id}?from=&length=100` | playlist4 |
 | `CatalogApi::*` | track / album / artist metadata | `POST /extended-metadata/v0/extended-metadata`, **batched** (≤100 URIs), `TRACK_V4` / `ALBUM_V4` / `ARTIST_V4` | `BatchedEntityRequest` → `metadata.Track/Album/Artist` |
+| `PlaylistApi::create_playlist` | create | `POST /playlist/v2/playlist` (`ListUpdateRequest` with the name), then add to the rootlist | playlist4 |
+| `PlaylistApi::edit_playlist` | add / remove / move / rename | `POST /playlist/v2/playlist/{id}/changes` (`ListChanges`: one `Delta` with `ADD` / `REM` / `MOV` / `UPDATE_LIST_ATTRIBUTES` ops) | playlist4 |
+| `PlaylistApi::delete_playlist` | delete / remove from library | `POST /playlist/v2/user/{user}/rootlist/changes` (`REM` of the playlist URI, `items_as_key`) | playlist4 |
 | `LyricsApi` | synced lyrics | `GET /color-lyrics/v2/track/{id}?format=json&vocalRemoval=false&market=from_token` | JSON |
 | `SearchApi` | search | pathfinder `searchDesktop` (fallback: `GET /searchview/km/v4/search/{q}`) | JSON |
 | `HomeApi` | Home shelves | pathfinder `home` (fallback: `GET /recently-played/v3/user/{user}/recently-played`) | JSON |
@@ -103,6 +106,30 @@ host: `https://api-partner.spotify.com`. Both can be overridden for tests
 The collection2v2 messages are not compiled into `librespot-protocol`, so a
 ~150-line hand-written codec (`net/proto.rs`) encodes and decodes them. The
 codec has unit tests, including wire-level checks.
+
+### Playlist editing (`net/playlist_edit.rs`)
+
+Bodies are built from `librespot-protocol`'s `playlist4_external` messages
+(`ListChanges`, `Delta`, `Op`, `Add`, `Rem`, `Mov`, `UpdateListAttributes`,
+`ListUpdateRequest`, `CreateListReply`) and unit-tested by decoding them again.
+
+- Every edit first reads the list's **current revision** (uncached,
+  `?from=0&length=1`) and sends it as `base_revision`, so it applies on top
+  of the server state. After a write, every cached `/playlist/v2/` read is
+  dropped.
+- Removes carry `from_index`, `length = 1` and the item URI, highest index
+  first. Moves send `to_index` as "insert before the original item at this
+  index" (our API takes the final position and converts, +1 when moving
+  down).
+- Create adds the new list to the top of the rootlist (`add_first`); delete
+  removes it from the rootlist. That is also "Remove from Your Library" for
+  playlists owned by someone else.
+- The app refuses index-based edits (remove, move) when the loaded entries
+  do not line up with the server's positions (episodes or removed items were
+  dropped while loading: `TrackList::indices_exact`).
+- **Unverified against the live service:** the endpoint paths and op shapes
+  follow the playlist4 protocol but were only exercised against wiremock
+  fixtures. Collaborative playlists are not treated specially.
 
 ### Resilience and request behaviour
 
@@ -184,7 +211,9 @@ or null `data` is never cached.
   the current track are ignored (stale end-of-track after a skip).
 - The queue (order, shuffle, repeat, "Next in queue") lives in the app
   (`app/state.rs::Queue`); librespot only plays single tracks. Gapless
-  preloading is not wired up yet.
+  playback: when librespot reports `TimeToPreloadNextTrack`, the app sends
+  `Preload` for `Queue::peek_next()` (not for repeat-one or a shuffle round
+  that would be reshuffled), and the following `Load` uses the preloaded data.
 - Audio session failures retry with exponential backoff (1 s → 60 s).
 - A dead session (`Session::is_invalid()`, `Player::is_invalid()` or a closed
   player channel, checked every 2 s) emits `SessionLost`: the app pauses at
@@ -226,7 +255,23 @@ or null `data` is never cached.
   temporary.
 - Not done yet: local playback is not published to connect-state, so other
   devices do not see what Ferrotune plays locally, and Ferrotune cannot
-  control other devices.
+  control other devices (no device picker). `Spirc` does not expose the
+  device list; it needs a direct connect-state client.
+
+## 3b. Keyboard shortcuts, menus, dialogs
+
+- `app/shortcuts.rs::map` turns a key press into a `Ui` message (pure, tested).
+  The subscription (`event::listen_with`) ignores key presses a widget already
+  handled, so typing in the search box never triggers a shortcut. `Ctrl` is
+  `Cmd` on macOS. The help dialog's table (`shortcuts::HELP`) sits next to the
+  mapping.
+- Right clicks are caught by `ui/context_area.rs`, a small wrapper widget that
+  reports the cursor position in window coordinates (iced's `mouse_area`
+  does not). `app/menu.rs` is the pure model: `entries(target, liked)` lists
+  what a menu offers and `place` keeps it inside the window.
+- Optimistic playlist edits take an `EditSnapshot` (library list + detail
+  view) and restore it when the server refuses. Overlapping edits of the same
+  playlist roll back to the older snapshot.
 
 ## 4. MPRIS (`src/net/mpris.rs`, Linux only)
 
