@@ -1,8 +1,9 @@
 //! The ONLY module allowed to call the `keyring` crate (architecture §5).
 //!
 //! Stored entries (service `dev.ferro.ferrotune`):
-//! * `oauth` — JSON with the Web API access/refresh tokens.
-//! * `librespot` — JSON with librespot's reusable credentials blob.
+//! * `librespot` — JSON with librespot's reusable credentials blob. This is
+//!   the only credential Ferrotune keeps.
+//! * `oauth` — legacy (v0.1/v0.2 Web API tokens); deleted on sight.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -13,7 +14,8 @@ use secrecy::{ExposeSecret, SecretString};
 use crate::config::APP_ID;
 use crate::error::{Error, Result};
 
-pub const KEY_OAUTH: &str = "oauth";
+/// Legacy entry from the Web-API-based releases; only ever deleted.
+pub const KEY_LEGACY_OAUTH: &str = "oauth";
 pub const KEY_LIBRESPOT: &str = "librespot";
 
 /// A secret value. Zeroised on drop, never printed.

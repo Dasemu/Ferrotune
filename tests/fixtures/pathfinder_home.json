@@ -1,0 +1,14 @@
+{"data": {"home": {"greeting": {"transformedLabel": "Good evening"}, "sectionContainer": {"sections": {"items": [
+  {"data": {"__typename": "HomeGenericSectionData", "title": {"transformedLabel": "Made For Ferro"}},
+   "sectionItems": {"items": [
+     {"uri": "spotify:playlist:37i9dQZF1E39vTG3GurFPW", "content": {"__typename": "PlaylistResponseWrapper",
+        "data": {"__typename": "Playlist", "name": "Daily Mix 1", "description": "Nova Harbor and more",
+                 "images": {"items": [{"sources": [{"url": "https://i.scdn.co/image/dm1", "width": 300}]}]},
+                 "ownerV2": {"data": {"name": "Spotify"}}}}},
+     {"uri": "spotify:album:4aawyAB9vmqN3uQ7FjRGTy", "content": {"__typename": "AlbumResponseWrapper",
+        "data": {"__typename": "Album", "name": "Tidal", "artists": {"items": [{"uri": "spotify:artist:0OdUWJ0sBjDrqHygGUXeCF", "profile": {"name": "Nova Harbor"}}]},
+                 "coverArt": {"sources": [{"url": "https://i.scdn.co/image/c", "width": 300}]}}}}
+   ]}},
+  {"data": {"__typename": "HomeGenericSectionData", "title": {"transformedLabel": "Popular podcasts"}},
+   "sectionItems": {"items": [{"uri": "spotify:show:s1", "content": {"data": {"__typename": "Podcast", "name": "x"}}}]}}
+]}}}}}

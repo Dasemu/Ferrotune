@@ -1,0 +1,21 @@
+{"data": {"searchV2": {
+  "tracksV2": {"items": [
+    {"item": {"data": {"__typename": "Track", "uri": "spotify:track:6rqhFgbbKwnb9MLmUQDhG6", "name": "Harbor Lights",
+      "duration": {"totalMilliseconds": 215000},
+      "contentRating": {"label": "NONE"},
+      "playability": {"playable": true},
+      "artists": {"items": [{"uri": "spotify:artist:0OdUWJ0sBjDrqHygGUXeCF", "profile": {"name": "Nova Harbor"}}]},
+      "albumOfTrack": {"uri": "spotify:album:4aawyAB9vmqN3uQ7FjRGTy", "name": "Tidal",
+        "coverArt": {"sources": [{"url": "https://i.scdn.co/image/ab67616d00001e02aa", "width": 300, "height": 300},
+                                 {"url": "https://i.scdn.co/image/ab67616d00004851aa", "width": 64, "height": 64}]}}}}},
+    {"item": {"data": {"__typename": "Episode", "uri": "spotify:episode:x"}}}
+  ]},
+  "artists": {"items": [{"data": {"uri": "spotify:artist:0OdUWJ0sBjDrqHygGUXeCF", "profile": {"name": "Nova Harbor"},
+     "visuals": {"avatarImage": {"sources": [{"url": "https://i.scdn.co/image/av", "width": 320, "height": 320}]}}}}]},
+  "albumsV2": {"items": [{"data": {"uri": "spotify:album:4aawyAB9vmqN3uQ7FjRGTy", "name": "Tidal", "type": "ALBUM",
+     "date": {"year": 2021}, "artists": {"items": [{"uri": "spotify:artist:0OdUWJ0sBjDrqHygGUXeCF", "profile": {"name": "Nova Harbor"}}]},
+     "coverArt": {"sources": [{"url": "https://i.scdn.co/image/c", "width": 300}]}}}]},
+  "playlists": {"items": [{"data": {"uri": "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", "name": "Harbor Mix",
+     "description": "Calm tunes", "ownerV2": {"data": {"name": "Ferro"}},
+     "images": {"items": [{"sources": [{"url": "https://i.scdn.co/image/p", "width": 300}]}]}}}]}
+}}}

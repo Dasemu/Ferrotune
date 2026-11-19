@@ -2,8 +2,9 @@
 
 ## Overview
 Native Rust Spotify desktop client (unofficial, Premium only). iced 0.14 UI
-recreating the official dark look; librespot 0.8 for audio; Spotify Web API
-(reqwest) for library/search/playlists; MPRIS on Linux; SQLite cache.
+recreating the official dark look. One librespot 0.8 session (desktop client
+id, zero-config browser login) drives audio, Spotify Connect and the internal
+spclient/pathfinder APIs; no public Web API. MPRIS on Linux; SQLite cache.
 
 ## Commands
 - `cargo build --release` / `cargo run -- --mock`
@@ -14,11 +15,11 @@ recreating the official dark look; librespot 0.8 for audio; Spotify Web API
 
 ## Architecture
 See `docs/architecture.md` (shared Ferro* skeleton) and `docs/protocol.md`
-(OAuth, Web API, librespot, MPRIS, UI reference).
+(login, endpoints, persisted queries, Connect, MPRIS, UI reference).
 - `src/app/` state + update (queue/nav reducers in `state.rs`)
 - `src/ui/` views + `theme.rs` (only place with colours/sizes)
-- `src/net/` Web API, playback engine, MPRIS, images
-- `src/store/` SQLite cache, `src/auth/` OAuth PKCE + keyring
+- `src/net/` session, internal-API backends (traits in `backend.rs`), playback, MPRIS
+- `src/store/` SQLite cache, `src/auth/` browser login (PKCE) + keyring
 
 ## Conventions
 - English everywhere; Conventional Commits; small commits.
@@ -34,8 +35,8 @@ See `docs/architecture.md` (shared Ferro* skeleton) and `docs/protocol.md`
 - Tests never hit the network: use `wiremock` + `tests/fixtures/`.
 
 ## Deployment
-No packaging yet. Release binary from `cargo build --release`. Users must
-register their own Spotify app (README).
+No packaging yet. Release binary from `cargo build --release`;
+`ferrotune --install-desktop-entry` writes the .desktop file + icon.
 
 ## Gotchas
 - iced: keep default features on (x11/wayland). `Subscription::map` closures
@@ -43,6 +44,8 @@ register their own Spotify app (README).
 - `tokio::time::sleep` must be created inside an `async` block for
   `Task::perform` (no runtime in unit tests otherwise).
 - Spotify requires `http://127.0.0.1:<port>` redirect URIs (not localhost).
+- Pathfinder persisted-query hashes rotate: they live only in
+  `net/pathfinder.rs`; refresh steps in docs/protocol.md.
 - Paging uses raw entry counts (`Page::raw_len`), since episodes/null items
   are dropped during conversion.
 - librespot rodio backend needs ALSA dev libs on Linux.

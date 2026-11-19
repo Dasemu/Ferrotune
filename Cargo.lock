@@ -1414,7 +1414,7 @@ dependencies = [
 
 [[package]]
 name = "ferrotune"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "directories",
@@ -1422,12 +1422,14 @@ dependencies = [
  "iced",
  "image",
  "keyring",
+ "librespot-connect",
  "librespot-core",
  "librespot-metadata",
  "librespot-playback",
  "librespot-protocol",
  "lru",
  "mpris-server",
+ "protobuf",
  "rand 0.9.5",
  "reqwest",
  "rusqlite",
@@ -2842,6 +2844,26 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "librespot-connect"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b2a21e9e19b906c6676b1a515fc5529d5414f69049f5a167dfb2ea3206e5a27"
+dependencies = [
+ "futures-util",
+ "librespot-core",
+ "librespot-playback",
+ "librespot-protocol",
+ "log",
+ "protobuf",
+ "rand 0.9.5",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "uuid",
 ]
 
 [[package]]

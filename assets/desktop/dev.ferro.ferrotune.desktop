@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Ferrotune
+GenericName=Music Player
+Comment=Lightweight unofficial Spotify client
+Exec=ferrotune
+Icon=dev.ferro.ferrotune
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;spotify;player;audio;
+StartupNotify=true
+StartupWMClass=dev.ferro.ferrotune
+SingleMainWindow=true

@@ -1,8 +1,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 //! Entry point: logging, config, `iced::application(..).run()`.
 //!
-//! Usage: `ferrotune [--mock] [--screenshot <screen> <out.png>]`
-//! Screens: login, home, search, library, playlist, album, artist, liked, queue.
+//! Usage: `ferrotune [--mock] [--screenshot <screen> <out.png>] [--install-desktop-entry]`
+//! Screens: login, home, search, library, playlist, album, artist, liked, queue, lyrics, connect, keyring.
 
 use std::time::Instant;
 
@@ -11,8 +11,30 @@ use ferrotune::config::{APP_ID, Config};
 use ferrotune::ui::{self, theme};
 
 fn usage() -> ! {
-    eprintln!("usage: ferrotune [--mock] [--screenshot <screen> <out.png>]");
+    eprintln!(
+        "usage: ferrotune [--mock] [--screenshot <screen> <out.png>] [--install-desktop-entry]"
+    );
     std::process::exit(2);
+}
+
+/// Write the .desktop entry and icon to `~/.local/share` and exit.
+fn install_desktop_entry() -> ! {
+    let exe = std::env::current_exe().unwrap_or_else(|_| "ferrotune".into());
+    let Some(home) = ferrotune::desktop::data_home() else {
+        eprintln!("could not determine the XDG data directory");
+        std::process::exit(1);
+    };
+    match ferrotune::desktop::install(&home, &exe) {
+        Ok((entry, icon)) => {
+            println!("installed {}", entry.display());
+            println!("installed {}", icon.display());
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("could not install the desktop entry: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn main() -> iced::Result {
@@ -40,6 +62,7 @@ fn main() -> iced::Result {
                 });
                 mock = true;
             }
+            "--install-desktop-entry" => install_desktop_entry(),
             "-h" | "--help" => usage(),
             _ => usage(),
         }

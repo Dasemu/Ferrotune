@@ -7,10 +7,11 @@ use crate::error::Result;
 use crate::net::DataSource;
 use crate::net::images::DecodedImage;
 use crate::net::model::{
-    Album, ArtistPage, HomeFeed, Library, Page, Playlist, SearchResults, Track, User,
+    Album, ArtistPage, HomeFeed, Library, Lyrics, Page, Playlist, SearchResults, Track, User,
 };
 use crate::net::mpris::MediaEvent;
-use crate::net::playback::{PlaybackEvent, SpotifySession};
+use crate::net::playback::PlaybackEvent;
+use crate::net::session::SpotifySession;
 
 /// A list of tracks the user can start playing from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,8 +21,6 @@ pub enum TrackSource {
     Liked,
     ArtistTop(String),
     Search,
-    HomeRecent,
-    HomeTop,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +52,7 @@ pub enum Ui {
     VolumeCommit,
     ToggleMute,
     ToggleQueue,
+    ToggleLyrics,
     PlayUpcoming(usize),
     PlayQueued(usize),
     Enqueue(Track),
@@ -60,6 +60,7 @@ pub enum Ui {
     HoverRow(Option<String>),
     SelectRow(String),
     Login,
+    RetryKeyring,
     CancelLogin,
     OpenLoginUrl,
     CopyLoginUrl,
@@ -80,6 +81,8 @@ pub enum Net {
 pub struct SessionReady {
     pub source: DataSource,
     pub user: Option<User>,
+    /// The connected librespot session (`None` in mock mode).
+    pub session: Option<SpotifySession>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +102,7 @@ pub enum Done {
     SearchDebounced(u64),
     Search(u64, Result<SearchResults>),
     Image(String, Result<DecodedImage>),
+    Lyrics(String, Result<Option<Lyrics>>),
     LikeSaved(String, bool, Result<()>),
     LikedFlags(Vec<String>, Result<Vec<bool>>),
     ReconnectAudio,
