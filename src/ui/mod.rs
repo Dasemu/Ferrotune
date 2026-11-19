@@ -16,6 +16,7 @@ pub mod queue;
 pub mod search;
 pub mod settings;
 pub mod sidebar;
+pub mod soloist;
 pub mod theme;
 pub mod topbar;
 pub mod widgets;
@@ -147,6 +148,9 @@ fn main_panel(app: &App) -> El<'_> {
         .height(Length::Fill)
         .width(Length::Fill);
     let mut col = column![].spacing(0);
+    if let Some(c) = soloist::setup_card(app) {
+        col = col.push(container(c).padding(8));
+    }
     if let Some(b) = devices::block_banner(app) {
         col = col.push(container(b).padding(8));
     }

@@ -3,7 +3,7 @@
 //!
 //! Usage: `ferrotune [--mock] [--screenshot <screen> <out.png>] [--install-desktop-entry]`
 //! Screens: login, home, search, library, playlist, album, artist, liked, queue, lyrics, connect, keyring,
-//! menu, shortcuts, rename.
+//! menu, shortcuts, rename, settings, soloist, soloist-settings.
 
 use std::time::Instant;
 

@@ -97,9 +97,15 @@ pub fn view(app: &App) -> El<'_> {
             ),
         ],
     );
-    let playback = section(
-        "Playback",
-        vec![
+    let mut playback_rows = super::soloist::settings_rows(
+        app,
+        setting_row,
+        toggler(app.soloist_enabled())
+            .on_toggle(|v| ui(Ui::Soloist(crate::app::soloist::SoloistUi::Enable(v))))
+            .size(20)
+            .into(),
+    );
+    playback_rows.extend([
             setting_row(
                 "Gapless playback",
                 Some("Start the next song without a pause. (Crossfade is not supported.)"),
@@ -117,8 +123,8 @@ pub fn view(app: &App) -> El<'_> {
                 ),
                 switch(s.play_local, SettingChange::PlayLocal),
             ),
-        ],
-    );
+    ]);
+    let playback = section("Playback", playback_rows);
     let name = text_input(&app.config.device_name, &s.device_name)
         .on_input(|v| ui(Ui::Setting(SettingChange::DeviceName(v))))
         .on_submit(ui(Ui::Setting(SettingChange::DeviceNameCommit)))

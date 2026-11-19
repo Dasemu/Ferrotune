@@ -19,8 +19,10 @@ pub use super::session::SpotifySession;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EngineKind {
     Mock,
-    /// Bitrate and volume normalisation (a change restarts the engine).
-    Librespot(BitrateKey, bool),
+    /// Bitrate, volume normalisation and whether librespot plays locally
+    /// (`false` while Spotify Soloist is the local engine). A change
+    /// restarts the engine.
+    Librespot(BitrateKey, bool, bool),
 }
 
 /// Hashable mirror of [`Bitrate`] for subscription identity.
@@ -178,8 +180,8 @@ pub fn events(kind: EngineKind) -> impl Stream<Item = PlaybackEvent> + Send + 's
             EngineKind::Mock => {
                 tokio::spawn(run_mock(cmd_rx, ev_tx));
             }
-            EngineKind::Librespot(b, norm) => {
-                tokio::spawn(run_librespot(b, norm, cmd_rx, ev_tx));
+            EngineKind::Librespot(b, norm, local) => {
+                tokio::spawn(run_librespot(b, norm, local, cmd_rx, ev_tx));
             }
         }
         let ready =
@@ -438,6 +440,7 @@ pub fn map_remote_event(e: librespot_playback::player::PlayerEvent) -> Option<Re
 async fn run_librespot(
     bitrate: BitrateKey,
     normalisation: bool,
+    local_player: bool,
     mut cmd_rx: mpsc::UnboundedReceiver<PlaybackCommand>,
     ev_tx: mpsc::UnboundedSender<PlaybackEvent>,
 ) {
@@ -565,7 +568,7 @@ async fn run_librespot(
                 if let Some(o) = observer.take() {
                     o.abort();
                 }
-                if new_session.connect.is_some() {
+                if new_session.dealer {
                     let s = new_session.session.clone();
                     let own = s.device_id().to_owned();
                     observer = Some(tokio::spawn(super::connect_ctl::observe(
@@ -580,6 +583,10 @@ async fn run_librespot(
                 connect = new_session.connect.clone();
                 remote_events = connect.as_ref().and_then(|c| c.take_events());
                 remote_active = false;
+                if !local_player {
+                    // Spotify Soloist plays: no local librespot player.
+                    continue;
+                }
                 if let Some(p) = player.as_ref().filter(|p| !p.is_invalid()) {
                     p.set_session(new_session.session);
                     continue;

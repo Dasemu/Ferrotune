@@ -72,6 +72,18 @@ pub enum Bitrate {
     High,
 }
 
+/// Which program plays audio on this computer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioEngine {
+    /// librespot inside Ferrotune.
+    #[default]
+    Builtin,
+    /// Spotify Soloist, Spotify's official headless player (a separate
+    /// process, downloaded from Spotify on first use).
+    Soloist,
+}
+
 /// Values that may be set in `config.json`. All optional.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -88,6 +100,9 @@ pub struct FileConfig {
     pub device_name: Option<String>,
     /// Play on this computer when Spotify allows it (default true).
     pub play_local: Option<bool>,
+    pub engine: Option<AudioEngine>,
+    /// PipeWire node for Spotify Soloist (empty = default output).
+    pub soloist_output: Option<String>,
 }
 
 /// Preferences edited on the Settings screen. Nothing secret: they are
@@ -103,6 +118,9 @@ pub struct Settings {
     pub theme: ThemeChoice,
     pub play_local: bool,
     pub connect: bool,
+    pub engine: AudioEngine,
+    /// PipeWire node name or id for Spotify Soloist; empty = default.
+    pub soloist_output: String,
 }
 
 impl Default for Settings {
@@ -116,6 +134,8 @@ impl Default for Settings {
             theme: ThemeChoice::Dark,
             play_local: true,
             connect: true,
+            engine: AudioEngine::Builtin,
+            soloist_output: String::new(),
         }
     }
 }
@@ -139,6 +159,8 @@ impl Settings {
             m.insert("theme".into(), v(serde_json::to_value(self.theme)));
             m.insert("play_local".into(), self.play_local.into());
             m.insert("connect".into(), self.connect.into());
+            m.insert("engine".into(), v(serde_json::to_value(self.engine)));
+            m.insert("soloist_output".into(), self.soloist_output.clone().into());
         }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -172,6 +194,8 @@ pub struct Config {
     /// librespot session's access-point resolver.
     pub spclient_base: Option<String>,
     pub pathfinder_base: String,
+    /// Spotify Soloist download host (`FERROTUNE_SOLOIST_CDN` for tests).
+    pub soloist_cdn: String,
     /// `--mock`: no network, mock data, in-memory secrets.
     pub mock: bool,
     /// Log `first_frame_ms` (FERRO_TRACE_STARTUP=1).
@@ -193,6 +217,7 @@ impl Config {
                 connect: env("FERROTUNE_CONNECT").map(|v| v != "0"),
                 spclient: env("FERROTUNE_SPCLIENT_URL"),
                 pathfinder: env("FERROTUNE_PATHFINDER_URL"),
+                soloist_cdn: env("FERROTUNE_SOLOIST_CDN"),
             },
             Paths {
                 data_dir,
@@ -224,6 +249,18 @@ impl Config {
             theme,
             play_local: file.play_local.unwrap_or(true),
             connect: env.connect.or(file.connect).unwrap_or(true),
+            engine: file.engine.unwrap_or_default(),
+            soloist_output: file
+                .soloist_output
+                .clone()
+                .map(|n| {
+                    n.trim()
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(128)
+                        .collect()
+                })
+                .unwrap_or_default(),
         };
         let device_name = if settings.device_name.is_empty() {
             device_name(hostname().as_deref())
@@ -256,6 +293,10 @@ impl Config {
                 .pathfinder
                 .and_then(|u| safe_endpoint("FERROTUNE_PATHFINDER_URL", &u))
                 .unwrap_or_else(|| SPOTIFY_PATHFINDER.into()),
+            soloist_cdn: env
+                .soloist_cdn
+                .and_then(|u| safe_endpoint("FERROTUNE_SOLOIST_CDN", &u))
+                .unwrap_or_else(|| crate::net::soloist::install::CDN_BASE.into()),
             mock,
             trace_startup,
         }
@@ -283,6 +324,11 @@ impl Config {
     /// True when the hidden `FERROTUNE_CLIENT_ID` override is in use.
     pub fn custom_client_id(&self) -> bool {
         self.client_id != desktop_client_id()
+    }
+
+    /// Where Spotify Soloist is installed and keeps its data.
+    pub fn soloist_paths(&self) -> crate::net::soloist::install::Paths {
+        crate::net::soloist::install::Paths::new(&self.data_dir, &self.cache_dir)
     }
 
     /// Optional overrides for GraphQL persisted-query hashes.
@@ -316,6 +362,7 @@ struct Env {
     connect: Option<bool>,
     spclient: Option<String>,
     pathfinder: Option<String>,
+    soloist_cdn: Option<String>,
 }
 
 /// Endpoint overrides receive the session token, so only `https://` is
@@ -499,6 +546,8 @@ mod tests {
             theme: ThemeChoice::Dark,
             play_local: false,
             connect: true,
+            engine: AudioEngine::Soloist,
+            soloist_output: "alsa_output.usb".into(),
         };
         s.save(&path).unwrap();
         let file = read_file_config(&path);
@@ -509,6 +558,7 @@ mod tests {
         assert_eq!(c.device_name, "Desk");
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("\"bitrate\": \"320\""), "{raw}");
+        assert!(raw.contains("\"engine\": \"soloist\""), "{raw}");
         // Garbage files are replaced, not fatal.
         std::fs::write(&path, "not json").unwrap();
         s.save(&path).unwrap();

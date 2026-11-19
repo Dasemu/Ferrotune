@@ -99,6 +99,9 @@ pub struct SessionOptions {
     /// Connect autoplay (continue with similar songs when a context ends).
     pub autoplay: bool,
     pub connect: Option<ConnectOptions>,
+    /// Without a Connect device (Spotify Soloist plays instead), still open
+    /// the dealer connection so the Connect controller sees the devices.
+    pub controller: bool,
 }
 
 /// The Spotify Connect device: `Spirc` plus its own player.
@@ -119,6 +122,8 @@ impl ConnectDevice {
 pub struct SpotifySession {
     pub session: librespot_core::Session,
     pub connect: Option<Arc<ConnectDevice>>,
+    /// The dealer runs (through Spirc, or as a controller only).
+    pub dealer: bool,
 }
 
 impl fmt::Debug for SpotifySession {
@@ -246,6 +251,42 @@ async fn start_connect(
     })
 }
 
+/// Open the dealer websocket without registering a playable device, the
+/// way the web player observes Connect: the connection id that the
+/// connect-state observer needs comes from `hm://pusher/v1/connections/`.
+async fn start_controller_dealer(session: &librespot_core::Session) -> bool {
+    use futures::StreamExt;
+    let ids = session
+        .dealer()
+        .listen_for("hm://pusher/v1/connections/", |msg| {
+            msg.headers
+                .get("Spotify-Connection-Id")
+                .cloned()
+                .ok_or_else(|| librespot_core::Error::failed_precondition("no connection id"))
+        });
+    let mut ids = match ids {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "no dealer for the Connect controller");
+            return false;
+        }
+    };
+    if let Err(e) = session.dealer().start().await {
+        tracing::warn!(error = %e, "could not open the dealer for the Connect controller");
+        return false;
+    }
+    let s = session.clone();
+    tokio::spawn(async move {
+        while let Some(id) = ids.next().await {
+            match id {
+                Ok(id) => s.set_connection_id(&id),
+                Err(e) => tracing::debug!(error = %e, "bad connection id push"),
+            }
+        }
+    });
+    true
+}
+
 /// Open the session (and the Connect device when enabled). Returns fresh
 /// reusable credentials for the keyring.
 pub async fn connect(
@@ -279,11 +320,15 @@ pub async fn connect(
             }
         }
     }
+    let mut dealer = device.is_some();
     if device.is_none() {
         session
             .connect(credentials, false)
             .await
             .map_err(|e| map_connect_error(&e, stored))?;
+        if opts.controller {
+            dealer = start_controller_dealer(&session).await;
+        }
     }
     let creds = StoredCredentials {
         username: session.username(),
@@ -293,6 +338,7 @@ pub async fn connect(
         SpotifySession {
             session,
             connect: device,
+            dealer,
         },
         creds,
     ))
