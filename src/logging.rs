@@ -17,51 +17,111 @@ pub const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
 const MASK: &str = "[REDACTED]";
 
-/// Markers after which the following token-like run of characters is masked.
-const MARKERS: &[&str] = &[
-    "Bearer ",
-    "bearer ",
-    "access_token=",
-    "refresh_token=",
-    "code=",
-    "code_verifier=",
-    "\"access_token\":\"",
-    "\"refresh_token\":\"",
-    "\"auth_data\":\"",
-    "access_token: \"",
-    "refresh_token: \"",
+/// Keys whose values are masked in `key=value`, `key: value`,
+/// `"key":"value"` and `"key": "value"` forms. Matched on a word boundary,
+/// so `barcode=` or `zip_code=` are left alone.
+const KEYS: &[&str] = &[
+    "access_token",
+    "refresh_token",
+    "code_verifier",
+    "code",
+    "auth_data",
+    "client_secret",
+    "password",
 ];
+
+/// Prefixes after which the following token is masked.
+const PREFIXES: &[&str] = &["Bearer ", "bearer "];
 
 fn is_token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '+' | '/' | '=' | '%')
 }
 
+fn is_word_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn token_len(s: &str) -> usize {
+    s.char_indices()
+        .find(|(_, c)| !is_token_char(*c))
+        .map_or(s.len(), |(i, _)| i)
+}
+
+/// If `key` occurs at `i` as a whole word followed by a separator, return
+/// the byte offset where its value starts.
+fn value_start(line: &str, i: usize, key: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    if i > 0 && is_word_char(bytes[i - 1]) {
+        return None;
+    }
+    let mut j = i + key.len();
+    if j < bytes.len() && is_word_char(bytes[j]) {
+        return None;
+    }
+    if bytes.get(j) == Some(&b'"') {
+        j += 1;
+    }
+    while bytes.get(j) == Some(&b' ') {
+        j += 1;
+    }
+    if !matches!(bytes.get(j), Some(b'=' | b':')) {
+        return None;
+    }
+    j += 1;
+    while bytes.get(j) == Some(&b' ') {
+        j += 1;
+    }
+    if bytes.get(j) == Some(&b'"') {
+        j += 1;
+    }
+    Some(j)
+}
+
 /// Mask secrets in a single formatted log line.
 pub fn redact_line(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut rest = line;
-    loop {
-        // Find the earliest marker in `rest`.
-        let next = MARKERS
-            .iter()
-            .filter_map(|m| rest.find(m).map(|i| (i, *m)))
-            .min_by_key(|(i, _)| *i);
-        let Some((idx, marker)) = next else {
-            out.push_str(rest);
-            return out;
-        };
-        let after = idx + marker.len();
-        out.push_str(&rest[..after]);
-        let tail = &rest[after..];
-        let token_len: usize = tail
-            .char_indices()
-            .find(|(_, c)| !is_token_char(*c))
-            .map_or(tail.len(), |(i, _)| i);
-        if token_len > 0 {
-            out.push_str(MASK);
+    // Collect (start, end) ranges of secret values, then rebuild the line.
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for key in KEYS {
+        let mut from = 0;
+        while let Some(off) = line[from..].find(key) {
+            let i = from + off;
+            from = i + key.len();
+            if let Some(v) = value_start(line, i, key) {
+                let len = token_len(&line[v..]);
+                if len > 0 {
+                    ranges.push((v, v + len));
+                }
+            }
         }
-        rest = &tail[token_len..];
     }
+    for p in PREFIXES {
+        let mut from = 0;
+        while let Some(off) = line[from..].find(p) {
+            let v = from + off + p.len();
+            from = v;
+            let len = token_len(&line[v..]);
+            if len > 0 {
+                ranges.push((v, v + len));
+            }
+        }
+    }
+    if ranges.is_empty() {
+        return line.to_owned();
+    }
+    ranges.sort_unstable();
+    let mut out = String::with_capacity(line.len());
+    let mut pos = 0;
+    for (start, end) in ranges {
+        if end <= pos {
+            continue;
+        }
+        let start = start.max(pos);
+        out.push_str(&line[pos..start]);
+        out.push_str(MASK);
+        pos = end;
+    }
+    out.push_str(&line[pos..]);
+    out
 }
 
 /// A size-capped log file that rotates to `<name>.1`.
@@ -211,6 +271,17 @@ mod tests {
         assert!(l.contains("state=s1"));
         let l = redact_line(r#"{"access_token":"tok1","token_type":"Bearer"}"#);
         assert!(!l.contains("tok1"));
+        let l = redact_line(r#"{"access_token": "tok2", "refresh_token" : "tok3"}"#);
+        assert!(!l.contains("tok2") && !l.contains("tok3"), "{l}");
+        let l = redact_line("TokenSet { access_token: \"tok4\", code: abc }");
+        assert!(!l.contains("tok4") && !l.contains("abc"), "{l}");
+        // Word boundary: other keys ending in "code" are not secrets.
+        let l = redact_line("scanned barcode=12345 zip_code=10115 code=AQsecret");
+        assert!(
+            l.contains("barcode=12345") && l.contains("zip_code=10115"),
+            "{l}"
+        );
+        assert!(!l.contains("AQsecret"));
     }
 
     #[test]
