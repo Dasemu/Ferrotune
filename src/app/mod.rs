@@ -3065,6 +3065,43 @@ impl App {
                     }
                 }
             }
+            "settings" => {
+                self.nav = Nav::new(Route::Home);
+                tasks.push(self.navigate(Route::Settings));
+                self.cache_bytes = Some(23_400_000);
+            }
+            "profile" => {
+                self.nav = Nav::new(Route::Home);
+                self.profiles
+                    .insert("mockuser".into(), crate::mock::profile("mockuser"));
+                tasks.push(self.navigate(Route::Profile("mockuser".into())));
+            }
+            "devices" | "denied" => {
+                self.nav = Nav::new(Route::Home);
+                tasks.push(self.navigate(Route::Library));
+                let mut cluster = crate::mock::cluster();
+                if plan.screen == "denied" {
+                    cluster.active_device_id = None;
+                    for d in &mut cluster.devices {
+                        d.is_active = false;
+                    }
+                    cluster.player = None;
+                    self.local_denied = true;
+                    let reason =
+                        crate::net::audio_diag::UnavailableReason::AudioKeyDenied { code: 1 };
+                    self.playback_block = Some(PlaybackBlock {
+                        reason,
+                        message: format!(
+                            "{} You can play on another device instead.",
+                            reason.describe()
+                        ),
+                    });
+                    self.last_device = Some(("phone".into(), "Pixel 8".into()));
+                } else {
+                    self.device_picker = true;
+                }
+                tasks.push(self.on_cluster(cluster));
+            }
             "queue" => {
                 self.show_queue = true;
                 self.nav = Nav::new(Route::Home);

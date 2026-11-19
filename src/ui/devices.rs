@@ -193,7 +193,8 @@ pub fn block_banner(app: &App) -> Option<El<'_>> {
         container(
             row![
                 icon(Icon::Alert, 16.0, p.text_primary),
-                container(label(b.message.as_str(), M.font_sm, p.text_primary, FONT))
+                label(b.message.as_str(), M.font_sm, p.text_primary, FONT)
+                    .wrapping(iced::widget::text::Wrapping::Word)
                     .width(Length::Fill),
                 actions,
             ]

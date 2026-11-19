@@ -629,6 +629,57 @@ pub fn image(url: &str, max_px: u32) -> DecodedImage {
     DecodedImage::from_rgba(size, size, rgba)
 }
 
+/// The user's other Spotify Connect devices, for screenshots.
+pub fn cluster() -> crate::net::connect_ctl::ClusterState {
+    use crate::net::connect_ctl::{
+        ClusterPlayer, ClusterState, ClusterTrack, DeviceKind, RemoteDevice,
+    };
+    let t = playlist_tracks(1).into_iter().next();
+    ClusterState {
+        active_device_id: Some("phone".into()),
+        devices: vec![
+            RemoteDevice {
+                id: "phone".into(),
+                name: "Pixel 8".into(),
+                kind: DeviceKind::Smartphone,
+                volume: Some(0.6),
+                is_active: true,
+            },
+            RemoteDevice {
+                id: "speaker".into(),
+                name: "Living Room".into(),
+                kind: DeviceKind::Speaker,
+                volume: Some(0.4),
+                is_active: false,
+            },
+            RemoteDevice {
+                id: "desk".into(),
+                name: "Office PC".into(),
+                kind: DeviceKind::Computer,
+                volume: Some(1.0),
+                is_active: false,
+            },
+        ],
+        player: t.map(|t| ClusterPlayer {
+            track: Some(ClusterTrack {
+                uri: t.uri.clone(),
+                name: t.name.clone(),
+                artists: t.artists.iter().map(|a| a.name.clone()).collect(),
+                album: t.album.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
+                cover_url: crate::net::model::pick_image(t.images(), 300).map(|i| i.url.clone()),
+            }),
+            context_uri: "spotify:playlist:pl02".into(),
+            is_playing: true,
+            is_paused: false,
+            position_ms: 64_000,
+            duration_ms: t.duration_ms,
+            shuffle: false,
+            repeat_context: true,
+            repeat_track: false,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

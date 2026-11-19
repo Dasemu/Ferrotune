@@ -2,6 +2,17 @@
 
 Things learned while building Ferrotune. Add new entries at the top.
 
+- **librespot hides why a track failed.** `PlayerEvent::Unavailable` has no
+  reason; the cause is only in librespot's log. A tracing layer that reads
+  librespot's own records (`net/audio_diag.rs`) turned "every song is
+  unavailable" into "audio key refused with code 1" (librespot #1649), which
+  no client-side retry fixes. Never auto-skip on a failure that hits every
+  track: cap the streak and show one banner.
+- **Owners are usernames, ownership is a capability.** Rootlist owners are
+  raw usernames and the profile fetch is optional; compare with
+  `session.username()` and prefer `capabilities.can_edit_items`, which also
+  covers collaborative lists.
+
 - **`mouse_area` reports no window position.** Its `on_move` point is local to
   the widget and its right-press carries nothing, so a context menu needs a
   tiny wrapper widget (`ui/context_area.rs`) that reads `cursor.position()`.
