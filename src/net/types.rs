@@ -77,8 +77,11 @@ impl<T> Paging<T> {
         model::Page {
             items,
             offset: self.offset,
-            total: self.total.max(self.offset + raw_len as u32),
-            raw_len: raw_len as u32,
+            total: self.total.max(
+                self.offset
+                    .saturating_add(u32::try_from(raw_len).unwrap_or(u32::MAX)),
+            ),
+            raw_len: u32::try_from(raw_len).unwrap_or(u32::MAX),
         }
     }
 }

@@ -425,3 +425,21 @@ async fn image_fetch_and_decode() {
     assert_eq!((img.width, img.height), (300, 300));
     assert_eq!(img.average, [0, 0, 255]);
 }
+
+#[tokio::test]
+async fn oversized_image_is_rejected() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/image/huge"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0u8; 9 * 1024 * 1024]))
+        .mount(&server)
+        .await;
+    let err = ferrotune::net::images::fetch(
+        &reqwest::Client::new(),
+        &format!("{}/image/huge", server.uri()),
+        64,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, Error::Protocol("image too large".into()));
+}

@@ -5,7 +5,7 @@
 /// We compute this from `offset + len` instead of following the `next`
 /// URL so that pages work identically against a mock server.
 pub fn next_offset(offset: u32, len: usize, total: u32) -> Option<u32> {
-    let next = offset.saturating_add(len as u32);
+    let next = offset.saturating_add(u32::try_from(len).unwrap_or(u32::MAX));
     (len > 0 && next < total).then_some(next)
 }
 

@@ -262,7 +262,7 @@ pub fn now_secs() -> u64 {
 
 impl TokenSet {
     pub fn is_expired(&self, now: u64) -> bool {
-        now + EXPIRY_MARGIN_SECS >= self.expires_at
+        now.saturating_add(EXPIRY_MARGIN_SECS) >= self.expires_at
     }
 
     pub fn to_secret(&self) -> Result<Secret> {
@@ -293,7 +293,7 @@ impl TokenSet {
                 .refresh_token
                 .map(Secret::new)
                 .or_else(|| previous_refresh.cloned()),
-            expires_at: now + r.expires_in,
+            expires_at: now.saturating_add(r.expires_in),
             scope: r.scope,
         }
     }
@@ -492,6 +492,7 @@ mod tests {
         assert_eq!(back, t);
         assert!(!t.is_expired(900));
         assert!(t.is_expired(941));
+        assert!(t.is_expired(u64::MAX), "no overflow");
         assert!(format!("{t:?}").contains("[REDACTED]"));
         assert!(!format!("{t:?}").contains("\"a\""));
     }

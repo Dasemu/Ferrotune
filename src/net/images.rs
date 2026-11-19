@@ -53,9 +53,25 @@ pub fn average_color(rgba: &[u8]) -> [u8; 3] {
     [(r / n) as u8, (g / n) as u8, (b / n) as u8]
 }
 
+/// Largest image response we download (album art is ~100-300 KB).
+pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+/// Largest source dimensions we decode (Spotify serves at most 640-2000 px).
+pub const MAX_IMAGE_DIM: u32 = 4096;
+
 /// Decode JPEG/PNG bytes and downscale to at most `max_px` on the long side.
+/// Oversized inputs are rejected before allocating the decode buffer.
 pub fn decode(bytes: &[u8], max_px: u32) -> Result<DecodedImage> {
-    let img = image::load_from_memory(bytes).map_err(|e| Error::Protocol(format!("image: {e}")))?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| Error::Protocol(format!("image: {e}")))?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIM);
+    limits.max_image_height = Some(MAX_IMAGE_DIM);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let img = reader
+        .decode()
+        .map_err(|e| Error::Protocol(format!("image: {e}")))?;
     let img = if img.width() > max_px || img.height() > max_px {
         img.thumbnail(max_px, max_px)
     } else {
@@ -74,7 +90,21 @@ pub async fn fetch(http: &reqwest::Client, url: &str, max_px: u32) -> Result<Dec
             message: "image".into(),
         });
     }
-    let bytes = resp.bytes().await?;
+    if resp
+        .content_length()
+        .is_some_and(|n| n > MAX_IMAGE_BYTES as u64)
+    {
+        return Err(Error::Protocol("image too large".into()));
+    }
+    // Stream with a cap: Content-Length may be absent or wrong.
+    let mut resp = resp;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if bytes.len() + chunk.len() > MAX_IMAGE_BYTES {
+            return Err(Error::Protocol("image too large".into()));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     tokio::task::spawn_blocking(move || decode(&bytes, max_px))
         .await
         .map_err(|_| Error::Cancelled)?
@@ -96,5 +126,12 @@ mod tests {
         assert_eq!(d.byte_size(), 100 * 50 * 4);
         assert_eq!(d.average, [200, 10, 10]);
         assert!(decode(b"not an image", 100).is_err());
+        // A PNG header claiming 100000x100000 is refused before decoding.
+        let mut huge = Vec::new();
+        huge.extend_from_slice(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR");
+        huge.extend_from_slice(&100_000u32.to_be_bytes());
+        huge.extend_from_slice(&100_000u32.to_be_bytes());
+        huge.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(decode(&huge, 100).is_err());
     }
 }
