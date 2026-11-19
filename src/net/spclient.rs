@@ -271,7 +271,7 @@ impl Internal {
             .send(
                 Request::get(
                     Target::Spclient(format!(
-                        "/playlist/v2/playlist/{id}?from={from}&length={length}"
+                        "/playlist/v2/playlist/{id}?decorate=revision,length,attributes,timestamp,owner,capabilities&from={from}&length={length}"
                     )),
                     PROTOBUF,
                 )
@@ -693,6 +693,8 @@ pub fn searchview_results(query: &str, v: &Value) -> SearchResults {
                         .unwrap_or("")
                         .to_owned(),
                     images: image(h),
+                    can_edit: None,
+                    mosaic: Vec::new(),
                     total_tracks: 0,
                 })
             })
@@ -963,6 +965,8 @@ impl PlaylistApi for Internal {
                 description: String::new(),
                 owner: self.username(),
                 images: vec![],
+                can_edit: None,
+                mosaic: Vec::new(),
                 total_tracks: 0,
             })
         })

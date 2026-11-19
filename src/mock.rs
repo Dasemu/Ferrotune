@@ -328,6 +328,8 @@ fn playlist_at(i: usize) -> Playlist {
         description: desc.into(),
         owner: owner.into(),
         images: images(id),
+        can_edit: None,
+        mosaic: Vec::new(),
         total_tracks: playlist_tracks(i).len() as u32,
     }
 }
@@ -439,6 +441,8 @@ pub fn new_playlist(name: &str) -> Playlist {
         description: String::new(),
         owner: user().display_name,
         images: vec![],
+        can_edit: None,
+        mosaic: Vec::new(),
         total_tracks: 0,
     }
 }

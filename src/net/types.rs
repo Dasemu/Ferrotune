@@ -8,7 +8,7 @@
 //!   change over time. An entry we cannot understand is dropped, never fatal.
 
 use librespot_protocol::metadata;
-use librespot_protocol::playlist4_external::SelectedListContent;
+use librespot_protocol::playlist4_external::{ListAttributes, SelectedListContent};
 use serde_json::Value;
 
 use super::model::{
@@ -217,27 +217,86 @@ pub fn artist_release_ids(a: &metadata::Artist, cap: usize) -> Vec<String> {
         .collect()
 }
 
+/// Cover of a playlist: its own `picture`, else the server-rendered sizes
+/// (`picture_size`, used by mosaics and personalised lists such as Daily
+/// Mix), else an `image_url` format attribute. Only https URLs are kept.
+pub fn list_images(attrs: Option<&ListAttributes>) -> Vec<Image> {
+    let Some(a) = attrs else {
+        return Vec::new();
+    };
+    if !a.picture().is_empty() {
+        return vec![Image {
+            url: image_url(a.picture()),
+            width: Some(300),
+            height: Some(300),
+        }];
+    }
+    let px = |target: &str| match target {
+        "small" => Some(60),
+        "default" => Some(300),
+        "large" => Some(640),
+        "xlarge" => Some(1000),
+        _ => None,
+    };
+    let sized: Vec<Image> = a
+        .picture_size
+        .iter()
+        .filter(|p| p.url().starts_with("https://"))
+        .map(|p| {
+            let w = px(p.target_name());
+            Image {
+                url: p.url().to_owned(),
+                width: w,
+                height: w,
+            }
+        })
+        .collect();
+    if !sized.is_empty() {
+        return sized;
+    }
+    a.format_attributes
+        .iter()
+        .find(|f| f.key() == "image_url" && f.value().starts_with("https://"))
+        .map(|f| {
+            vec![Image {
+                url: f.value().to_owned(),
+                width: None,
+                height: None,
+            }]
+        })
+        .unwrap_or_default()
+}
+
+/// Name of a playlist; personalised lists may carry it only as a format
+/// attribute.
+fn list_name(attrs: Option<&ListAttributes>) -> String {
+    let Some(a) = attrs else {
+        return String::new();
+    };
+    if !a.name().trim().is_empty() {
+        return a.name().to_owned();
+    }
+    a.format_attributes
+        .iter()
+        .find(|f| matches!(f.key(), "title" | "name") && !f.value().trim().is_empty())
+        .map(|f| f.value().to_owned())
+        .unwrap_or_default()
+}
+
 /// Playlist header from a `SelectedListContent`.
 pub fn playlist(id: &str, c: &SelectedListContent) -> Playlist {
     let attrs = c.attributes.as_ref();
-    let picture = attrs.map(|a| a.picture()).filter(|p| !p.is_empty());
     Playlist {
         id: id.to_owned(),
         uri: format!("spotify:playlist:{id}"),
-        name: attrs.map(|a| a.name().to_owned()).unwrap_or_default(),
+        name: list_name(attrs),
         description: attrs
             .map(|a| a.description().to_owned())
             .unwrap_or_default(),
         owner: c.owner_username().to_owned(),
-        images: picture
-            .map(|p| {
-                vec![Image {
-                    url: image_url(p),
-                    width: Some(300),
-                    height: Some(300),
-                }]
-            })
-            .unwrap_or_default(),
+        images: list_images(attrs),
+        can_edit: c.capabilities.as_ref().and_then(|k| k.can_edit_items),
+        mosaic: Vec::new(),
         total_tracks: u32::try_from(c.length()).unwrap_or(0),
     }
 }
@@ -274,26 +333,21 @@ pub fn rootlist(c: &SelectedListContent) -> Vec<Playlist> {
             }
             let meta = contents.meta_items.get(i);
             let attrs = meta.and_then(|m| m.attributes.as_ref());
-            let picture = attrs.map(|a| a.picture()).filter(|p| !p.is_empty());
             Some(Playlist {
                 id: id.to_owned(),
                 uri: format!("spotify:playlist:{id}"),
-                name: attrs.map(|a| a.name().to_owned()).unwrap_or_default(),
+                name: list_name(attrs),
                 description: attrs
                     .map(|a| a.description().to_owned())
                     .unwrap_or_default(),
                 owner: meta
                     .map(|m| m.owner_username().to_owned())
                     .unwrap_or_default(),
-                images: picture
-                    .map(|p| {
-                        vec![Image {
-                            url: image_url(p),
-                            width: Some(300),
-                            height: Some(300),
-                        }]
-                    })
-                    .unwrap_or_default(),
+                images: list_images(attrs),
+                can_edit: meta
+                    .and_then(|m| m.capabilities.as_ref())
+                    .and_then(|k| k.can_edit_items),
+                mosaic: Vec::new(),
                 total_tracks: meta
                     .and_then(|m| u32::try_from(m.length()).ok())
                     .unwrap_or(0),
@@ -450,6 +504,8 @@ pub fn gql_playlist(d: &Value) -> Option<Playlist> {
         description: s(d, "/description").unwrap_or_default(),
         owner: s(d, "/ownerV2/data/name").unwrap_or_default(),
         images: sources(d.pointer("/images/items/0/sources")),
+        can_edit: None,
+        mosaic: Vec::new(),
         total_tracks: 0,
     })
 }

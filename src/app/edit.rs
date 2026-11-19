@@ -73,6 +73,8 @@ mod tests {
             description: String::new(),
             owner: "me".into(),
             images: vec![],
+            can_edit: None,
+            mosaic: Vec::new(),
             total_tracks: n,
         }
     }

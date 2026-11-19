@@ -7,8 +7,10 @@
 //!
 //! Never touches UI types. The public Web API (api.spotify.com) is not used.
 
+pub mod audio_diag;
 pub mod backend;
 pub mod client;
+pub mod connect_ctl;
 pub mod images;
 pub mod model;
 pub mod mpris;
@@ -153,6 +155,25 @@ impl DataSource {
         match self {
             Self::Spotify(b) => b.playlists.delete_playlist(id).await,
             Self::Mock => Ok(()),
+        }
+    }
+
+    /// Spotify Connect controller call (`from` is our device id).
+    pub async fn connect_op(&self, from: String, op: connect_ctl::ConnectOp) -> Result<()> {
+        use connect_ctl::ConnectOp;
+        let client = match self {
+            Self::Spotify(b) => b
+                .client
+                .clone()
+                .ok_or_else(|| crate::error::Error::Net("not connected".into()))?,
+            Self::Mock => return Ok(()),
+        };
+        match op {
+            ConnectOp::Command(to, cmd) => {
+                connect_ctl::send_command(&client, &from, &to, &cmd).await
+            }
+            ConnectOp::Transfer(to) => connect_ctl::transfer(&client, &from, &to).await,
+            ConnectOp::Volume(to, v) => connect_ctl::set_volume(&client, &from, &to, v).await,
         }
     }
 

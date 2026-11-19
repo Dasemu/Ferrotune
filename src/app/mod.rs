@@ -78,15 +78,65 @@ pub struct SearchState {
     pub error: Option<String>,
 }
 
-/// Playback controlled through our Spotify Connect device.
+/// Who plays while [`App::remote`] is set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteKind {
+    /// Another device casts to our Spotify Connect device.
+    Cast,
+    /// We control another device (phone, desktop app, speaker).
+    Device { id: String, name: String },
+}
+
+/// Playback that is not the local queue: a cast to us, or another device
+/// we control through connect-state.
 #[derive(Debug, Clone)]
 pub struct RemotePlayback {
+    pub kind: RemoteKind,
     pub track: Option<Track>,
     pub playback: Playback,
+    pub shuffle: bool,
+    pub repeat: Repeat,
+}
+
+impl RemotePlayback {
+    pub fn device_name(&self) -> Option<&str> {
+        match &self.kind {
+            RemoteKind::Device { name, .. } => Some(name),
+            RemoteKind::Cast => None,
+        }
+    }
+
+    fn device_id(&self) -> Option<&str> {
+        match &self.kind {
+            RemoteKind::Device { id, .. } => Some(id),
+            RemoteKind::Cast => None,
+        }
+    }
+}
+
+/// A persistent playback problem shown as a banner (not a toast).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaybackBlock {
+    pub reason: crate::net::audio_diag::UnavailableReason,
+    pub message: String,
+}
+
+/// Map a track list to the Connect context the official clients use.
+pub fn context_uri(src: &TrackSource, user: &str, first_track: Option<&str>) -> Option<String> {
+    Some(match src {
+        TrackSource::Playlist(id) => format!("spotify:playlist:{id}"),
+        TrackSource::Album(id) => format!("spotify:album:{id}"),
+        TrackSource::ArtistTop(id) => format!("spotify:artist:{id}"),
+        TrackSource::Liked if !user.is_empty() => format!("spotify:user:{user}:collection"),
+        TrackSource::Liked => return None,
+        TrackSource::Search => first_track?.to_owned(),
+    })
 }
 
 pub struct App {
     pub config: Arc<Config>,
+    /// Settings screen values (persisted in `config.json`).
+    pub settings: config::Settings,
     pub secrets: Arc<dyn SecretStore>,
     pub store: Store,
     pub source: Option<DataSource>,
@@ -119,8 +169,21 @@ pub struct App {
     pub show_lyrics: bool,
     /// Lyrics for a track id: `None` while loading, `Some(None)` = none.
     pub lyrics: Option<(String, Option<Option<Lyrics>>)>,
-    /// Another device is playing through our Connect device.
+    /// Playback on another device: a cast to us, or a device we control.
     pub remote: Option<RemotePlayback>,
+    /// The user's Spotify Connect devices (connect-state cluster).
+    pub cluster: Option<crate::net::connect_ctl::ClusterState>,
+    /// Last device that played something: `(id, name)` (kv `last_device`).
+    pub last_device: Option<(String, String)>,
+    pub device_picker: bool,
+    /// Spotify refused the audio key: this computer cannot play, so
+    /// playback goes to a Connect device instead.
+    pub local_denied: bool,
+    /// One persistent playback error (instead of a looping toast).
+    pub playback_block: Option<PlaybackBlock>,
+    skip_guard: state::SkipGuard,
+    /// Tasks started from helpers that cannot return one (run by `update`).
+    pending: Vec<Task<Message>>,
     /// Reusable credentials are in the keyring (silent login possible).
     has_stored_credentials: bool,
     /// Stable librespot device id (kv `device_id`), so Spotify Connect does
@@ -195,15 +258,36 @@ where
     )
 }
 
-fn session_options(config: &Config, volume: f32, device_id: &str) -> SessionOptions {
+fn session_options(
+    config: &Config,
+    settings: &config::Settings,
+    volume: f32,
+    device_id: &str,
+) -> SessionOptions {
+    let name = if settings.device_name.trim().is_empty() {
+        config.device_name.clone()
+    } else {
+        settings.device_name.trim().to_owned()
+    };
     SessionOptions {
         client_id: config.client_id.clone(),
         device_id: Some(device_id.to_owned()),
-        connect: config.connect.then(|| ConnectOptions {
-            name: config.device_name.clone(),
-            bitrate: config.bitrate.into(),
+        autoplay: settings.autoplay,
+        connect: settings.connect.then(|| ConnectOptions {
+            name,
+            bitrate: settings.bitrate.into(),
+            normalisation: settings.normalisation,
             initial_volume: volume,
         }),
+    }
+}
+
+/// The engine for the current settings (a change restarts it).
+pub fn engine_kind(mock: bool, s: &config::Settings) -> EngineKind {
+    if mock {
+        EngineKind::Mock
+    } else {
+        EngineKind::Librespot(s.bitrate.into(), s.normalisation)
     }
 }
 
@@ -426,14 +510,15 @@ impl App {
             .unwrap_or(Route::Home);
 
         let device_id = load_device_id(&store);
+        let last_device = setting("last_device").and_then(|v| {
+            let (id, name) = v.split_once('\n')?;
+            Some((id.to_owned(), name.to_owned()))
+        });
         let screenshot = opts.screenshot.clone();
         let mut app = Self {
             auth: AuthState::initial(),
-            engine_kind: if mock {
-                EngineKind::Mock
-            } else {
-                EngineKind::Librespot(config.bitrate.into())
-            },
+            engine_kind: engine_kind(mock, &config.settings),
+            settings: config.settings.clone(),
             mpris_enabled: screenshot.is_none() && cfg!(target_os = "linux"),
             config,
             secrets,
@@ -465,6 +550,13 @@ impl App {
             show_lyrics: false,
             lyrics: None,
             remote: None,
+            cluster: None,
+            last_device,
+            device_picker: false,
+            local_denied: false,
+            playback_block: None,
+            skip_guard: state::SkipGuard::default(),
+            pending: Vec::new(),
             has_stored_credentials: false,
             device_id,
             hovered_row: None,
@@ -520,6 +612,7 @@ impl App {
     fn session_opts(&self) -> SessionOptions {
         session_options(
             &self.config,
+            &self.settings,
             self.playback.effective_volume(),
             &self.device_id,
         )
@@ -610,6 +703,12 @@ impl App {
             Message::Net(Net::Playback(e)) => self.on_playback(e),
             Message::Net(Net::Media(e)) => self.on_media(e),
             Message::Done(d) => self.on_done(d),
+        };
+        let pending: Vec<_> = self.pending.drain(..).collect();
+        let task = if pending.is_empty() {
+            task
+        } else {
+            Task::batch(std::iter::once(task).chain(pending))
         };
         if is_tick {
             return task;
@@ -783,7 +882,12 @@ impl App {
     }
 
     fn show_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        self.toast = Some(state::next_toast(
+            self.toast.as_ref(),
+            msg.into(),
+            Instant::now(),
+            Duration::from_secs(TOAST_SECS),
+        ));
     }
 
     // ------------------------------------------------------------- loading
@@ -1339,6 +1443,7 @@ impl App {
                 self.playback.status = PlayStatus::Loading;
             }
             PlaybackEvent::Playing { uri, position_ms } if self.current_uri() == Some(&uri) => {
+                self.skip_guard.on_playing();
                 self.playback
                     .report(PlayStatus::Playing, position_ms, self.now);
             }
@@ -1353,16 +1458,16 @@ impl App {
             PlaybackEvent::EndOfTrack { uri } if self.current_uri() == Some(&uri) => {
                 self.advance(true);
             }
-            PlaybackEvent::Unavailable { uri } if self.current_uri() == Some(&uri) => {
+            PlaybackEvent::Unavailable { uri, reason } if self.current_uri() == Some(&uri) => {
                 if !self.is_mock() && self.session.is_none() {
                     // No audio session: every track would be "unavailable".
                     // Pause instead of skipping through the whole queue.
                     self.pause_for_reconnect();
                 } else {
-                    self.show_toast("This song is not available. Skipping.");
-                    self.advance(false);
+                    return self.on_unavailable(&uri, reason);
                 }
             }
+            PlaybackEvent::Cluster(c) => return self.on_cluster(c),
             PlaybackEvent::PreloadNext => {
                 // Gapless playback: fetch the next track now, so it starts
                 // the moment this one ends.
@@ -1389,6 +1494,327 @@ impl App {
         Task::none()
     }
 
+    fn on_unavailable(
+        &mut self,
+        uri: &str,
+        reason: crate::net::audio_diag::UnavailableReason,
+    ) -> Task<Message> {
+        use state::UnavailableAction;
+        tracing::debug!(
+            ?reason,
+            streak = self.skip_guard.streak(),
+            "track unavailable"
+        );
+        match self.skip_guard.on_unavailable(uri, reason) {
+            UnavailableAction::Retry => {
+                if let Some(t) = self.queue.current.clone() {
+                    self.start_track(t, 0);
+                }
+            }
+            UnavailableAction::Skip => {
+                self.show_toast(format!("{} Skipping.", reason.describe()));
+                self.advance(false);
+            }
+            UnavailableAction::Stop(reason) => {
+                let pos = self.playback.position(self.now);
+                self.playback.report(PlayStatus::Paused, pos, self.now);
+                self.reload_on_play = true;
+                let message = if reason.is_key_denied() {
+                    self.local_denied = true;
+                    let mut m = reason.describe().to_owned();
+                    m.push_str(" You can play on another device instead.");
+                    m
+                } else {
+                    format!(
+                        "Playback stopped: {} songs in a row could not be played. {}",
+                        state::SkipGuard::MAX_SKIPS + 1,
+                        reason.describe()
+                    )
+                };
+                tracing::warn!(?reason, "playback stopped");
+                self.toast = None;
+                self.playback_block = Some(PlaybackBlock { reason, message });
+                // Show the user's devices right away.
+                self.engine_send(PlaybackCommand::RefreshDevices);
+            }
+        }
+        Task::none()
+    }
+
+    /// The device to play on instead of this computer, if any.
+    pub fn suggested_device(&self) -> Option<(String, String)> {
+        let c = self.cluster.as_ref()?;
+        if let Some(d) = c.active_remote() {
+            return Some((d.id.clone(), d.name.clone()));
+        }
+        if let Some((id, _)) = &self.last_device
+            && let Some(d) = c.device(id)
+        {
+            return Some((d.id.clone(), d.name.clone()));
+        }
+        c.devices.first().map(|d| (d.id.clone(), d.name.clone()))
+    }
+
+    /// Should new playback go to another device?
+    fn play_target(&self) -> Option<(String, String)> {
+        if let Some(r) = &self.remote
+            && let RemoteKind::Device { id, name } = &r.kind
+        {
+            return Some((id.clone(), name.clone()));
+        }
+        if self.local_denied || !self.settings.play_local {
+            return self.suggested_device();
+        }
+        None
+    }
+
+    fn connect_task(&self, op: crate::net::connect_ctl::ConnectOp) -> Task<Message> {
+        let Some(src) = self.source() else {
+            return Task::none();
+        };
+        let from = self.device_id.clone();
+        Task::perform(async move { src.connect_op(from, op).await }, |r| {
+            Message::Done(Done::ConnectSent(r))
+        })
+    }
+
+    /// Start `src` on another device through connect-state.
+    fn play_remote(
+        &mut self,
+        src: &TrackSource,
+        index: Option<usize>,
+        device: (String, String),
+    ) -> Task<Message> {
+        use crate::net::connect_ctl::{ConnectOp, ControlCommand, PlayRequest};
+        let tracks = self.tracks_for(src).map(|(_, t)| t).unwrap_or_default();
+        let track = index.and_then(|i| tracks.get(i)).or_else(|| tracks.first());
+        let user = self.username();
+        let Some(context_uri) = context_uri(src, &user, track.map(|t| t.uri.as_str())) else {
+            self.show_toast("Nothing playable here.");
+            return Task::none();
+        };
+        if self.playback.is_playing() {
+            self.engine_send(PlaybackCommand::Pause);
+        }
+        let req = PlayRequest {
+            context_uri,
+            track_uri: index.and(track).map(|t| t.uri.clone()),
+            track_index: index,
+            position_ms: None,
+        };
+        self.playback_block = None;
+        self.set_remote_device(&device.0, &device.1);
+        if let Some(r) = self.remote.as_mut() {
+            if let Some(t) = track {
+                r.track = Some(t.clone());
+                r.playback.duration_ms = t.duration_ms;
+            }
+            r.playback.report(PlayStatus::Loading, 0, self.now);
+        }
+        self.connect_task(ConnectOp::Command(device.0, ControlCommand::Play(req)))
+    }
+
+    /// Mark `id` as the device we control (until the cluster says otherwise).
+    fn set_remote_device(&mut self, id: &str, name: &str) {
+        let kind = RemoteKind::Device {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        };
+        match self.remote.as_mut() {
+            Some(r) if r.kind == kind => {}
+            _ => {
+                self.remote = Some(RemotePlayback {
+                    kind,
+                    track: None,
+                    playback: Playback {
+                        volume: self.playback.volume,
+                        ..Playback::default()
+                    },
+                    shuffle: false,
+                    repeat: Repeat::Off,
+                })
+            }
+        }
+    }
+
+    fn remember_device(&mut self, id: &str, name: &str) -> Task<Message> {
+        if self
+            .last_device
+            .as_ref()
+            .is_some_and(|(i, n)| i == id && n == name)
+        {
+            return Task::none();
+        }
+        self.last_device = Some((id.to_owned(), name.to_owned()));
+        self.persist_setting("last_device", format!("{id}\n{name}"))
+    }
+
+    /// Picker choice: `None` = this computer.
+    fn transfer_to(&mut self, target: Option<(String, String)>) -> Task<Message> {
+        use crate::net::connect_ctl::{ConnectOp, ControlCommand, PlayRequest};
+        self.device_picker = false;
+        let remote_id = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.device_id().map(str::to_owned));
+        let Some((id, name)) = target else {
+            // Back to this computer.
+            let Some(from) = remote_id else {
+                return Task::none();
+            };
+            self.remote = None;
+            let own = self.device_id.clone();
+            tracing::debug!("transfer playback to this computer");
+            let _ = from;
+            return self.connect_task(ConnectOp::Transfer(own));
+        };
+        let remember = self.remember_device(&id, &name);
+        self.playback_block = None;
+        let op = if remote_id.is_some() || self.queue.current.is_none() {
+            ConnectOp::Transfer(id.clone())
+        } else {
+            // Hand the local queue over: same context, track and position.
+            let pos = self.playback.position(self.now);
+            let t = self.queue.current.clone();
+            if self.playback.is_playing() {
+                self.engine_send(PlaybackCommand::Pause);
+            }
+            let ctx = self
+                .queue
+                .context
+                .as_ref()
+                .and_then(|c| c.route.clone())
+                .and_then(|r| match r {
+                    Route::Playlist(id) => Some(format!("spotify:playlist:{id}")),
+                    Route::Album(id) => Some(format!("spotify:album:{id}")),
+                    Route::Artist(id) => Some(format!("spotify:artist:{id}")),
+                    Route::Liked => Some(format!("spotify:user:{}:collection", self.username())),
+                    _ => None,
+                })
+                .or_else(|| t.as_ref().map(|t| t.uri.clone()));
+            match ctx {
+                Some(context_uri) => ConnectOp::Command(
+                    id.clone(),
+                    ControlCommand::Play(PlayRequest {
+                        context_uri,
+                        track_uri: t.as_ref().map(|t| t.uri.clone()),
+                        track_index: None,
+                        position_ms: Some(pos),
+                    }),
+                ),
+                None => ConnectOp::Transfer(id.clone()),
+            }
+        };
+        let track = self.queue.current.clone();
+        self.set_remote_device(&id, &name);
+        if let Some(r) = self.remote.as_mut()
+            && r.track.is_none()
+        {
+            r.playback.duration_ms = track.as_ref().map_or(0, |t| t.duration_ms);
+            r.track = track;
+        }
+        Task::batch([remember, self.connect_task(op)])
+    }
+
+    /// New connect-state cluster from the engine.
+    fn on_cluster(&mut self, c: crate::net::connect_ctl::ClusterState) -> Task<Message> {
+        let now = self.now;
+        let active = c.active_remote().cloned();
+        let player = c.player.clone();
+        self.cluster = Some(c);
+        let Some(dev) = active else {
+            if self
+                .remote
+                .as_ref()
+                .is_some_and(|r| matches!(r.kind, RemoteKind::Device { .. }))
+            {
+                self.remote = None;
+            }
+            return Task::none();
+        };
+        if self
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.kind == RemoteKind::Cast)
+        {
+            return Task::none();
+        }
+        // Another device plays: the local player yields, as in the official app.
+        if self.playback.is_playing() {
+            self.engine_send(PlaybackCommand::Pause);
+            let pos = self.playback.position(now);
+            self.playback.report(PlayStatus::Paused, pos, now);
+        }
+        let remember = self.remember_device(&dev.id, &dev.name);
+        self.set_remote_device(&dev.id, &dev.name);
+        if let Some(r) = self.remote.as_mut() {
+            if let Some(v) = dev.volume {
+                r.playback.volume = v;
+            }
+            if let Some(p) = player {
+                if let Some(t) = &p.track {
+                    r.track = Some(remote_track(&RemoteTrack {
+                        uri: t.uri.clone(),
+                        name: t.name.clone(),
+                        artists: t.artists.clone(),
+                        album: t.album.clone(),
+                        cover_url: t.cover_url.clone(),
+                        duration_ms: p.duration_ms,
+                    }));
+                }
+                r.playback.duration_ms = p.duration_ms;
+                let status = if p.is_playing && !p.is_paused {
+                    PlayStatus::Playing
+                } else {
+                    PlayStatus::Paused
+                };
+                r.playback.report(status, p.position_ms, now);
+                r.shuffle = p.shuffle;
+                r.repeat = if p.repeat_track {
+                    Repeat::Track
+                } else if p.repeat_context {
+                    Repeat::Context
+                } else {
+                    Repeat::Off
+                };
+            }
+        }
+        remember
+    }
+
+    /// Id of the device we control, if any.
+    pub fn remote_device(&self) -> Option<&str> {
+        self.remote.as_ref().and_then(RemotePlayback::device_id)
+    }
+
+    /// Shuffle / repeat as shown in the player bar.
+    pub fn shown_shuffle(&self) -> bool {
+        match &self.remote {
+            Some(r) if r.device_id().is_some() => r.shuffle,
+            _ => self.queue.shuffle,
+        }
+    }
+
+    pub fn shown_repeat(&self) -> Repeat {
+        match &self.remote {
+            Some(r) if r.device_id().is_some() => r.repeat,
+            _ => self.queue.repeat,
+        }
+    }
+
+    fn username(&self) -> String {
+        match &self.source {
+            Some(DataSource::Spotify(b)) => b
+                .session
+                .as_ref()
+                .map(|s| crate::net::client::SessionAuth::username(s.as_ref()))
+                .filter(|u| !u.is_empty())
+                .or_else(|| self.user.as_ref().map(|u| u.id.clone()))
+                .unwrap_or_default(),
+            _ => self.user.as_ref().map(|u| u.id.clone()).unwrap_or_default(),
+        }
+    }
+
     /// Spotify Connect: another device plays through us.
     ///
     /// Only a track change or playback start makes Connect the active
@@ -1397,7 +1823,10 @@ impl App {
     fn on_remote(&mut self, ev: RemoteEvent) {
         let now = self.now;
         if matches!(ev, RemoteEvent::Track(_) | RemoteEvent::Playing { .. })
-            && self.remote.is_none()
+            && self
+                .remote
+                .as_ref()
+                .is_none_or(|r| r.kind != RemoteKind::Cast)
         {
             if self.playback.is_playing() {
                 // The engine paused the local player; mirror that here.
@@ -1405,18 +1834,27 @@ impl App {
                 self.playback.report(PlayStatus::Paused, pos, now);
             }
             self.remote = Some(RemotePlayback {
+                kind: RemoteKind::Cast,
                 track: None,
                 playback: Playback {
                     volume: self.playback.volume,
                     ..Playback::default()
                 },
+                shuffle: false,
+                repeat: Repeat::Off,
             });
         }
         if matches!(ev, RemoteEvent::Stopped) {
-            self.remote = None;
+            if self
+                .remote
+                .as_ref()
+                .is_some_and(|r| r.kind == RemoteKind::Cast)
+            {
+                self.remote = None;
+            }
             return;
         }
-        let Some(r) = self.remote.as_mut() else {
+        let Some(r) = self.remote.as_mut().filter(|r| r.kind == RemoteKind::Cast) else {
             if let RemoteEvent::Volume(v) = ev {
                 tracing::debug!(volume = v, "connect volume while idle");
             }
@@ -1442,10 +1880,39 @@ impl App {
         }
     }
 
-    fn remote_send(&self, cmd: RemoteCommand) {
-        if let Some(e) = &self.engine {
-            e.send(PlaybackCommand::Remote(cmd));
+    /// Control the remote playback: Spirc for a cast to us, connect-state
+    /// commands for a device we control.
+    fn remote_send(&mut self, cmd: RemoteCommand) {
+        use crate::net::connect_ctl::{ConnectOp, ControlCommand};
+        let Some(id) = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.device_id().map(str::to_owned))
+        else {
+            if let Some(e) = &self.engine {
+                e.send(PlaybackCommand::Remote(cmd));
+            }
+            return;
+        };
+        // Optimistic: the next cluster push confirms or corrects it.
+        if let Some(r) = self.remote.as_mut() {
+            let pos = r.playback.position(self.now);
+            match cmd {
+                RemoteCommand::Play => r.playback.report(PlayStatus::Playing, pos, self.now),
+                RemoteCommand::Pause => r.playback.report(PlayStatus::Paused, pos, self.now),
+                _ => {}
+            }
         }
+        let op = match cmd {
+            RemoteCommand::Play => ConnectOp::Command(id, ControlCommand::Resume),
+            RemoteCommand::Pause => ConnectOp::Command(id, ControlCommand::Pause),
+            RemoteCommand::Next => ConnectOp::Command(id, ControlCommand::Next),
+            RemoteCommand::Previous => ConnectOp::Command(id, ControlCommand::Previous),
+            RemoteCommand::Seek(ms) => ConnectOp::Command(id, ControlCommand::Seek(ms)),
+            RemoteCommand::Volume(v) => ConnectOp::Volume(id, v),
+        };
+        let t = self.connect_task(op);
+        self.pending.push(t);
     }
 
     fn on_media(&mut self, e: MediaEvent) -> Task<Message> {
@@ -1674,10 +2141,54 @@ impl App {
                 Task::none()
             }
             Ui::PlayFrom(src, index) => {
+                self.skip_guard.reset();
+                if let Some(dev) = self.play_target() {
+                    return self.play_remote(&src, index, dev);
+                }
                 // Starting something locally takes playback back from Connect
                 // (the engine releases the Connect session).
                 self.remote = None;
+                self.playback_block = None;
                 self.play_from(src, index)
+            }
+            Ui::ToggleShuffle if self.remote_device().is_some() => {
+                use crate::net::connect_ctl::{ConnectOp, ControlCommand};
+                let id = self.remote_device().map(str::to_owned).unwrap_or_default();
+                let on = self.remote.as_ref().is_some_and(|r| !r.shuffle);
+                if let Some(r) = self.remote.as_mut() {
+                    r.shuffle = on;
+                }
+                self.connect_task(ConnectOp::Command(id, ControlCommand::Shuffle(on)))
+            }
+            Ui::CycleRepeat if self.remote_device().is_some() => {
+                use crate::net::connect_ctl::{ConnectOp, ControlCommand};
+                let id = self.remote_device().map(str::to_owned).unwrap_or_default();
+                let next = self
+                    .remote
+                    .as_ref()
+                    .map_or(Repeat::Off, |r| r.repeat.cycle());
+                if let Some(r) = self.remote.as_mut() {
+                    r.repeat = next;
+                }
+                self.connect_task(ConnectOp::Command(
+                    id,
+                    ControlCommand::Repeat {
+                        context: next != Repeat::Off,
+                        track: next == Repeat::Track,
+                    },
+                ))
+            }
+            Ui::ToggleDevicePicker => {
+                self.device_picker = !self.device_picker;
+                if self.device_picker {
+                    self.engine_send(PlaybackCommand::RefreshDevices);
+                }
+                Task::none()
+            }
+            Ui::PlayOn(target) => self.transfer_to(target),
+            Ui::DismissBanner => {
+                self.playback_block = None;
+                Task::none()
             }
             Ui::TogglePlay if self.remote.is_some() => {
                 let playing = self.now_playback().is_playing();
@@ -2249,6 +2760,13 @@ impl App {
             Done::PlaylistCreated(tmp, r) => self.on_playlist_created(tmp, r),
             Done::PlaylistEdited(snap, what, r) => self.on_playlist_edited(*snap, what, r),
             Done::Quit => iced::exit(),
+            Done::ConnectSent(Ok(())) => Task::none(),
+            Done::ConnectSent(Err(e)) => {
+                tracing::warn!(error = %e, "connect command failed");
+                self.show_toast(format!("Could not reach the device: {}", e.user_message()));
+                self.engine_send(PlaybackCommand::RefreshDevices);
+                Task::none()
+            }
             Done::Noop => Task::none(),
         }
     }

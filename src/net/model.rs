@@ -136,6 +136,14 @@ pub struct Playlist {
     pub owner: String,
     pub images: Vec<Image>,
     pub total_tracks: u32,
+    /// Spotify's `capabilities.can_edit_items` when known (own and
+    /// collaborative playlists); `None` = decide by owner.
+    #[serde(default)]
+    pub can_edit: Option<bool>,
+    /// Cover art of the first tracks, for a 2x2 mosaic when the playlist has
+    /// no picture of its own (as the official client draws it).
+    #[serde(default)]
+    pub mosaic: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -15,6 +15,28 @@ use crate::store::Kind;
 
 static TEMP_IDS: AtomicU32 = AtomicU32::new(1);
 
+/// Normalise a playlist owner (`spotify:user:<name>`, percent-encoded,
+/// any case) to the bare username.
+pub fn owner_username(owner: &str) -> String {
+    let raw = owner.trim();
+    let raw = raw.strip_prefix("spotify:user:").unwrap_or(raw);
+    let decoded: String = url::form_urlencoded::parse(format!("u={raw}").as_bytes())
+        .next()
+        .map(|(_, v)| v.into_owned())
+        .unwrap_or_else(|| raw.to_owned());
+    decoded.to_lowercase()
+}
+
+/// Is `owner` one of `me` (usernames; empty entries are ignored)?
+pub fn is_owner(owner: &str, me: &[&str]) -> bool {
+    let o = owner_username(owner);
+    !o.is_empty()
+        && me
+            .iter()
+            .filter(|m| !m.trim().is_empty())
+            .any(|m| owner_username(m) == o)
+}
+
 /// State to restore when an optimistic edit fails.
 #[derive(Debug, Clone)]
 pub struct EditSnapshot {
@@ -25,11 +47,17 @@ pub struct EditSnapshot {
 }
 
 impl App {
-    /// Is `p` one of the user's own playlists?
+    /// Can the user edit `p`? Spotify's own answer (`capabilities` from the
+    /// rootlist / playlist) wins; otherwise the owner is compared with the
+    /// session's canonical username, which does not depend on the profile
+    /// fetch, and with the profile id.
     pub fn owns(&self, p: &Playlist) -> bool {
-        self.user
-            .as_ref()
-            .is_some_and(|u| p.owner == u.id || p.owner == u.display_name)
+        if let Some(can) = p.can_edit {
+            return can;
+        }
+        let session = self.username();
+        let profile = self.user.as_ref().map(|u| u.id.as_str()).unwrap_or("");
+        is_owner(&p.owner, &[session.as_str(), profile])
     }
 
     /// Menu target for a playlist shown anywhere (card, sidebar row).
@@ -180,6 +208,8 @@ impl App {
                 description: String::new(),
                 owner,
                 images: vec![],
+                can_edit: None,
+                mosaic: Vec::new(),
                 total_tracks: 0,
             },
         );
