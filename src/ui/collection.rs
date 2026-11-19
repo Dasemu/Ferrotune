@@ -4,11 +4,13 @@ use iced::widget::{column, container, row};
 use iced::{Alignment, Color, Length, Padding};
 
 use super::icons::Icon;
+use super::menu::click_menu;
 use super::theme::{self, M};
 use super::widgets::{
-    El, TableOpts, action_band, art, artist_links, big_play, error_box, header, icon_button,
-    liked_art, loading, meta_line, secondary, semibold, track_table,
+    El, TableOpts, action_band, art, artist_links, big_play, error_box, header, hover_icon,
+    icon_button, liked_art, loading, meta_line, secondary, semibold, track_table,
 };
+use crate::app::menu::MenuTarget;
 use crate::app::state::{Route, format_total};
 use crate::app::{App, TrackSource, Ui, ui};
 use crate::net::model::Track;
@@ -23,7 +25,7 @@ fn tint_for(app: &App, images: &[crate::net::model::Image]) -> Color {
         .unwrap_or_else(|| Color::from_rgb8(0x53, 0x53, 0x53))
 }
 
-fn actions<'a>(app: &App, src: TrackSource, tint: Color) -> El<'a> {
+fn actions<'a>(app: &App, src: TrackSource, tint: Color, more: Option<MenuTarget>) -> El<'a> {
     let playing = app.is_playing_source(&src);
     action_band(
         tint,
@@ -35,12 +37,29 @@ fn actions<'a>(app: &App, src: TrackSource, tint: Color) -> El<'a> {
                 Some(ui(Ui::ToggleShuffle)),
                 app.queue.shuffle
             ),
-            icon_button(Icon::More, 28.0, None, false),
+            more_button(more),
         ]
         .spacing(16)
         .align_y(Alignment::Center)
         .into(),
     )
+}
+
+/// The "..." button: opens the context menu of the list on click.
+fn more_button<'a>(target: Option<MenuTarget>) -> El<'a> {
+    match target {
+        Some(t) => click_menu(
+            container(hover_icon(
+                Icon::More,
+                28.0,
+                theme::pal().text_secondary,
+                theme::pal().text_primary,
+            ))
+            .padding(8),
+            t,
+        ),
+        None => icon_button(Icon::More, 28.0, None, false),
+    }
 }
 
 fn body<'a>(table: El<'a>, footer: Option<El<'a>>) -> El<'a> {
@@ -99,7 +118,7 @@ pub fn playlist<'a>(app: &'a App, id: &'a str) -> El<'a> {
             Some(pl.description.clone()),
             meta
         ),
-        actions(app, src.clone(), tint),
+        actions(app, src.clone(), tint, Some(app.playlist_target(pl))),
         body(
             track_table(
                 app,
@@ -157,7 +176,7 @@ pub fn album<'a>(app: &'a App, id: &'a str) -> El<'a> {
             None,
             meta
         ),
-        actions(app, src.clone(), tint),
+        actions(app, src.clone(), tint, Some(MenuTarget::album(a))),
         body(
             track_table(
                 app,
@@ -204,7 +223,7 @@ pub fn liked(app: &App) -> El<'_> {
             None,
             meta
         ),
-        actions(app, TrackSource::Liked, tint),
+        actions(app, TrackSource::Liked, tint, None),
         body(
             track_table(
                 app,

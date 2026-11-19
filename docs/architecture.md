@@ -255,9 +255,9 @@ protobuf, pathfinder GraphQL, over `reqwest`). The public Web API is not used.
 
 | Module | Ferrotune files |
 |---|---|
-| `app/` | `mod.rs` (App, boot, update, subscription), `message.rs`, `state.rs` (Queue, Nav, Playback, backoff), `images.rs` (LRU of decoded art, 48 MB) |
-| `ui/` | `theme.rs`, `icons.rs`, `widgets.rs`, `login.rs`, `topbar.rs`, `sidebar.rs`, `home.rs`, `search.rs`, `library.rs`, `collection.rs` (playlist/album/liked), `artist.rs`, `queue.rs`, `now_playing.rs` |
-| `net/` | `session.rs` (librespot session, Connect device, `LiveAuth`), `client.rs` (authenticated HTTP: cache, coalescing, 429/401 handling), `tokens.rs`, `backend.rs` (Catalog/Library/Search/Home/Lyrics traits), `spclient.rs`, `pathfinder.rs`, `proto.rs` (collection2v2 codec), `types.rs` (wire → domain), `model.rs`, `paging.rs`, `playback.rs` (local + Connect players, mock engine), `mpris.rs`, `images.rs` |
+| `app/` | `mod.rs` (App, boot, update, subscription), `message.rs`, `state.rs` (Queue, Nav, Playback, backoff), `images.rs` (LRU of decoded art, 48 MB), `shortcuts.rs` (key → message), `menu.rs` (context-menu and dialog model), `playlists.rs` (optimistic playlist edits), `edit.rs` (pure edit reducers) |
+| `ui/` | `theme.rs`, `icons.rs`, `widgets.rs`, `login.rs`, `topbar.rs`, `sidebar.rs`, `home.rs`, `search.rs`, `library.rs`, `collection.rs` (playlist/album/liked), `artist.rs`, `queue.rs`, `now_playing.rs`, `menu.rs` (context menu + dialogs), `context_area.rs` (right-click position widget) |
+| `net/` | `session.rs` (librespot session, Connect device, `LiveAuth`), `client.rs` (authenticated HTTP: cache, coalescing, 429/401 handling), `tokens.rs`, `backend.rs` (Catalog/Library/Search/Home/Lyrics traits), `spclient.rs`, `pathfinder.rs`, `proto.rs` (collection2v2 codec), `types.rs` (wire → domain), `model.rs`, `paging.rs`, `playlist_edit.rs` (playlist4 change bodies), `playback.rs` (local + Connect players, mock engine), `mpris.rs`, `images.rs` |
 | `store/` | `mod.rs`, `schema.sql` (`entity` JSON blobs by kind/id, `kv` settings), `schema_v2.sql` (`http_cache`) |
 | `auth/` | `mod.rs` (AuthState: silent login → browser fallback), `oauth.rs` (PKCE, loopback listener, code exchange), `secrets.rs` |
 | other | `desktop.rs` (.desktop entry + icon installer) |

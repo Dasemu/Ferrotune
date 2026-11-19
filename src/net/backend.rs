@@ -6,6 +6,7 @@
 //! |---|---|---|
 //! | [`CatalogApi`] (playlists, albums, artists) | `spclient::Internal` | spclient protobuf (playlist4, extended-metadata) |
 //! | [`LibraryApi`] (profile, rootlist, liked songs, saved albums, followed artists, like/unlike) | `spclient::Internal` | spclient protobuf (rootlist, collection2v2) |
+//! | [`PlaylistApi`] (create, rename, add/remove/move tracks, delete) | `spclient::Internal` | spclient protobuf (playlist4 `changes`) |
 //! | [`SearchApi`] | `pathfinder::Pathfinder` | GraphQL persisted query `searchDesktop`, fallback spclient `searchview` |
 //! | [`HomeApi`] | `pathfinder::Pathfinder` | GraphQL persisted query `home`, fallback spclient `recently-played` |
 //! | [`LyricsApi`] | `spclient::Internal` | spclient `color-lyrics/v2` JSON |
@@ -20,6 +21,7 @@ use futures::future::BoxFuture;
 use super::model::{
     Album, ArtistPage, HomeFeed, Library, Lyrics, Page, Playlist, SearchResults, Track, User,
 };
+use super::playlist_edit::Edit;
 use crate::error::Result;
 
 pub trait CatalogApi: Send + Sync {
@@ -43,6 +45,16 @@ pub trait LibraryApi: Send + Sync {
     fn set_saved(&self, ids: Vec<String>, saved: bool) -> BoxFuture<'_, Result<()>>;
 }
 
+/// Playlist editing (playlist4 changes). Every call refetches the list's
+/// current revision first, so edits apply on top of what the server has.
+pub trait PlaylistApi: Send + Sync {
+    /// Create a playlist and add it to the sidebar; returns the new playlist.
+    fn create_playlist<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Playlist>>;
+    fn edit_playlist<'a>(&'a self, id: &'a str, edit: Edit) -> BoxFuture<'a, Result<()>>;
+    /// Remove a playlist from the user's library (delete when owned).
+    fn delete_playlist<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<()>>;
+}
+
 pub trait SearchApi: Send + Sync {
     fn search<'a>(&'a self, query: &'a str) -> BoxFuture<'a, Result<SearchResults>>;
 }
@@ -61,6 +73,7 @@ pub trait LyricsApi: Send + Sync {
 pub struct Backend {
     pub catalog: Arc<dyn CatalogApi>,
     pub library: Arc<dyn LibraryApi>,
+    pub playlists: Arc<dyn PlaylistApi>,
     pub search: Arc<dyn SearchApi>,
     pub home: Arc<dyn HomeApi>,
     pub lyrics: Arc<dyn LyricsApi>,
@@ -86,6 +99,7 @@ impl Backend {
         Self {
             catalog: internal.clone(),
             library: internal.clone(),
+            playlists: internal.clone(),
             search: pathfinder.clone(),
             home: pathfinder,
             lyrics: internal,

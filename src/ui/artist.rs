@@ -9,6 +9,7 @@ use super::widgets::{
     El, TableOpts, action_band, art, big_play, bold, card, card_row, error_box, header,
     icon_button, loading, secondary, section, track_table, vspace,
 };
+use crate::app::menu::MenuTarget;
 use crate::app::state::{Route, format_count};
 use crate::app::{App, TrackSource, Ui, ui};
 
@@ -45,6 +46,7 @@ pub fn view<'a>(app: &'a App, id: &'a str) -> El<'a> {
                 false,
                 Icon::Disc,
                 ui(Ui::Navigate(Route::Album(al.id.clone()))),
+                Some(MenuTarget::album(al)),
             )
         })
         .collect();

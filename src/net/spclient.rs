@@ -32,12 +32,13 @@ use protobuf::{EnumOrUnknown, Message as _, MessageField};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::backend::{CatalogApi, LibraryApi, LyricsApi};
+use super::backend::{CatalogApi, LibraryApi, LyricsApi, PlaylistApi};
 use super::client::{COLLECTION_PROTO, InternalClient, JSON, PROTOBUF, Request, Target};
 use super::model::{
     Album, Artist, ArtistPage, Card, HomeFeed, Library, Lyrics, Page, Playlist, SearchResults,
     Shelf, Track, User,
 };
+use super::playlist_edit::{self, Edit};
 use super::proto::{self, CollectionItem};
 use super::types;
 use crate::error::{Error, Result};
@@ -296,6 +297,48 @@ impl Internal {
         let mut page = Page::new(tracks, offset, total);
         page.raw_len = raw_len;
         Ok(page)
+    }
+
+    /// Current revision of a playlist (`id`) or the rootlist (`None`),
+    /// fetched uncached so a change applies on top of the server state.
+    async fn revision(&self, id: Option<&str>) -> Result<Vec<u8>> {
+        let path = match id {
+            Some(id) => {
+                if !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                    return Err(Error::Http {
+                        status: 404,
+                        message: "bad playlist id".into(),
+                    });
+                }
+                format!("/playlist/v2/playlist/{id}?from=0&length=1")
+            }
+            None => format!(
+                "/playlist/v2/user/{}/rootlist?decorate=revision&from=0&length=1",
+                enc(&self.username())
+            ),
+        };
+        let bytes = self
+            .client
+            .send(Request::get(Target::Spclient(path), PROTOBUF))
+            .await?;
+        let c: SelectedListContent = parse_proto(&bytes, "revision")?;
+        Ok(c.revision().to_vec())
+    }
+
+    async fn post_changes(&self, path: String, body: Vec<u8>) -> Result<()> {
+        self.client
+            .send(Request::post(Target::Spclient(path), PROTOBUF, body))
+            .await?;
+        // Playlist and rootlist reads are cached for minutes: drop them.
+        self.client.invalidate("/playlist/v2/").await;
+        Ok(())
+    }
+
+    fn rootlist_changes_path(&self) -> String {
+        format!(
+            "/playlist/v2/user/{}/rootlist/changes",
+            enc(&self.username())
+        )
     }
 
     async fn rootlist(&self) -> Result<Vec<Playlist>> {
@@ -890,6 +933,66 @@ impl LibraryApi for Internal {
                 self.persist("collection", &idx).await;
             }
             Ok(())
+        })
+    }
+}
+
+impl PlaylistApi for Internal {
+    fn create_playlist<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Playlist>> {
+        Box::pin(async move {
+            let bytes = self
+                .client
+                .send(Request::post(
+                    Target::Spclient("/playlist/v2/playlist".into()),
+                    PROTOBUF,
+                    playlist_edit::create_request(name),
+                ))
+                .await?;
+            let id = playlist_edit::parse_created(&bytes)?;
+            let uri = format!("spotify:playlist:{id}");
+            let rev = self.revision(None).await?;
+            self.post_changes(
+                self.rootlist_changes_path(),
+                playlist_edit::rootlist_add(&rev, &uri),
+            )
+            .await?;
+            Ok(Playlist {
+                id,
+                uri,
+                name: name.to_owned(),
+                description: String::new(),
+                owner: self.username(),
+                images: vec![],
+                total_tracks: 0,
+            })
+        })
+    }
+
+    fn edit_playlist<'a>(&'a self, id: &'a str, edit: Edit) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let rev = self.revision(Some(id)).await?;
+            self.post_changes(
+                format!("/playlist/v2/playlist/{id}/changes"),
+                playlist_edit::playlist_changes(&rev, &edit),
+            )
+            .await
+        })
+    }
+
+    fn delete_playlist<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                return Err(Error::Http {
+                    status: 404,
+                    message: "bad playlist id".into(),
+                });
+            }
+            let rev = self.revision(None).await?;
+            self.post_changes(
+                self.rootlist_changes_path(),
+                playlist_edit::rootlist_remove(&rev, &format!("spotify:playlist:{id}")),
+            )
+            .await
         })
     }
 }

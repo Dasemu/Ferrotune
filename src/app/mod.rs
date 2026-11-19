@@ -2,8 +2,12 @@
 //! No I/O happens here directly: side effects are returned as `Task`s that
 //! call into `net`, `store` and `auth`.
 
+pub mod edit;
 pub mod images;
+pub mod menu;
 pub mod message;
+pub mod playlists;
+pub mod shortcuts;
 pub mod state;
 
 use std::cell::Cell;
@@ -123,6 +127,14 @@ pub struct App {
     /// not list a new "Ferrotune" device after every start.
     device_id: String,
     pub hovered_row: Option<String>,
+    /// Open context menu (right click).
+    pub menu: Option<menu::ContextMenu>,
+    /// Open modal dialog (shortcuts help, rename, delete confirmation).
+    pub dialog: Option<menu::Dialog>,
+    /// Window size, to keep menus on screen.
+    pub window_size: iced::Size,
+    /// Row being dragged in an editable playlist: `(row key, index)`.
+    pub drag: Option<(String, usize)>,
     pub selected_row: Option<String>,
     pub toast: Option<(String, Instant)>,
     pub now: Instant,
@@ -319,6 +331,40 @@ async fn reconnect_session(
         .ok_or_else(|| Error::revoked(crate::auth::SILENT_LOGIN_REJECTED))
 }
 
+/// Keyboard shortcuts and window resizes. Key presses a widget handled
+/// (typing in the search box) are ignored.
+fn window_event(
+    event: iced::Event,
+    status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. })
+            if status == iced::event::Status::Ignored =>
+        {
+            shortcuts::map(&key, modifiers).map(ui)
+        }
+        iced::Event::Window(iced::window::Event::Resized(size)) => {
+            Some(ui(Ui::WindowResized(size)))
+        }
+        _ => None,
+    }
+}
+
+fn mouse_up_event(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    matches!(
+        event,
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+            iced::mouse::Button::Left
+        ))
+    )
+    .then(|| ui(Ui::MouseUp))
+}
+
 fn playback_stream(kind: &EngineKind) -> impl futures::Stream<Item = PlaybackEvent> + use<> {
     playback::events(*kind)
 }
@@ -422,6 +468,10 @@ impl App {
             has_stored_credentials: false,
             device_id,
             hovered_row: None,
+            menu: None,
+            dialog: None,
+            window_size: iced::Size::new(1280.0, 800.0),
+            drag: None,
             selected_row: None,
             toast: toast.map(|t| (t, Instant::now())),
             now: Instant::now(),
@@ -539,6 +589,10 @@ impl App {
         ];
         if self.mpris_enabled {
             subs.push(Subscription::run(media_stream).map(|e| Message::Net(Net::Media(e))));
+        }
+        subs.push(iced::event::listen_with(window_event));
+        if self.drag.is_some() {
+            subs.push(iced::event::listen_with(mouse_up_event));
         }
         if self.now_playback().status == PlayStatus::Playing || self.toast.is_some() {
             subs.push(
@@ -1309,6 +1363,16 @@ impl App {
                     self.advance(false);
                 }
             }
+            PlaybackEvent::PreloadNext => {
+                // Gapless playback: fetch the next track now, so it starts
+                // the moment this one ends.
+                if self.remote.is_none()
+                    && let Some(t) = self.queue.peek_next()
+                {
+                    let uri = t.uri.clone();
+                    self.engine_send(PlaybackCommand::Preload { uri });
+                }
+            }
             PlaybackEvent::SessionLost => return self.on_session_lost(),
             PlaybackEvent::Remote(ev) => self.on_remote(ev),
             PlaybackEvent::Stopped => {
@@ -1549,6 +1613,19 @@ impl App {
     // ------------------------------------------------------------------- ui
 
     fn update_ui(&mut self, u: Ui) -> Task<Message> {
+        // Any action other than opening/expanding the menu dismisses it.
+        if !matches!(
+            u,
+            Ui::OpenMenu(..)
+                | Ui::ToggleMenuPicker
+                | Ui::CloseOverlay
+                | Ui::Tick(_)
+                | Ui::HoverRow(_)
+                | Ui::Scrolled(_)
+                | Ui::WindowResized(_)
+        ) {
+            self.menu = None;
+        }
         match u {
             Ui::Navigate(r) => self.navigate(r),
             Ui::Back => {
@@ -1811,6 +1888,104 @@ impl App {
                 self.toast = None;
                 Task::none()
             }
+            Ui::FocusSearch => {
+                self.menu = None;
+                self.dialog = None;
+                Task::batch([
+                    self.navigate(Route::Search),
+                    iced::widget::operation::focus(crate::ui::topbar::SEARCH_ID),
+                    iced::widget::operation::select_all(crate::ui::topbar::SEARCH_ID),
+                ])
+            }
+            Ui::VolumeStep(d) => {
+                let v = (self.now_playback().volume + d).clamp(0.0, 1.0);
+                let t = self.update_ui(Ui::Volume(v));
+                Task::batch([t, self.update_ui(Ui::VolumeCommit)])
+            }
+            Ui::Quit => iced::exit(),
+            Ui::ToggleHelp => {
+                self.menu = None;
+                self.dialog = match self.dialog {
+                    Some(menu::Dialog::Shortcuts) => None,
+                    _ => Some(menu::Dialog::Shortcuts),
+                };
+                Task::none()
+            }
+            Ui::CloseOverlay => {
+                if self.menu.take().is_none() {
+                    self.dialog = None;
+                }
+                Task::none()
+            }
+            Ui::WindowResized(size) => {
+                self.window_size = size;
+                Task::none()
+            }
+            Ui::OpenMenu(target, at) => {
+                self.dialog = None;
+                self.menu = Some(menu::ContextMenu {
+                    target,
+                    at,
+                    picker: false,
+                });
+                Task::none()
+            }
+            Ui::ToggleMenuPicker => {
+                if let Some(m) = self.menu.as_mut() {
+                    m.picker = !m.picker;
+                }
+                Task::none()
+            }
+            Ui::CopyLink(link) => {
+                self.show_toast("Link copied to clipboard");
+                iced::clipboard::write(link)
+            }
+            Ui::NewPlaylist => self.new_playlist(),
+            Ui::OpenRename(id) => {
+                self.open_rename(id);
+                iced::widget::operation::focus(crate::ui::menu::DIALOG_INPUT_ID)
+            }
+            Ui::OpenDelete(id) => {
+                self.menu = None;
+                self.open_delete(id);
+                Task::none()
+            }
+            Ui::DialogInput(text) => {
+                if let Some(menu::Dialog::Rename { name, .. }) = self.dialog.as_mut() {
+                    *name = text.chars().take(100).collect();
+                }
+                Task::none()
+            }
+            Ui::DialogSubmit => self.dialog_submit(),
+            Ui::AddToPlaylist(id, t) => {
+                self.menu = None;
+                self.add_to_playlist(id, t)
+            }
+            Ui::RemoveFromPlaylist(id, i) => self.remove_from_playlist(id, i),
+            Ui::DragStart(key, i) => {
+                self.selected_row = Some(key.clone());
+                self.drag = Some((key, i));
+                Task::none()
+            }
+            Ui::DragDrop(to) => {
+                let Some((key, from)) = self.drag.take() else {
+                    return Task::none();
+                };
+                let Route::Playlist(id) = self.route().clone() else {
+                    return Task::none();
+                };
+                // The key carries the table it came from; ignore stale drags.
+                if from == to
+                    || !key.starts_with(&format!("{:?}", TrackSource::Playlist(id.clone())))
+                {
+                    return Task::none();
+                }
+                self.move_in_playlist(id, from, to)
+            }
+            Ui::MouseUp => {
+                self.drag = None;
+                Task::none()
+            }
             Ui::Tick(now) => {
                 self.now = now;
                 if self.toast.as_ref().is_some_and(|(_, at)| {
@@ -2071,6 +2246,8 @@ impl App {
                 }
                 iced::exit()
             }
+            Done::PlaylistCreated(tmp, r) => self.on_playlist_created(tmp, r),
+            Done::PlaylistEdited(snap, what, r) => self.on_playlist_edited(*snap, what, r),
             Done::Quit => iced::exit(),
             Done::Noop => Task::none(),
         }
@@ -2193,6 +2370,30 @@ impl App {
                     self.on_remote(RemoteEvent::Playing {
                         position_ms: 41_000,
                     });
+                }
+            }
+            "menu" | "shortcuts" | "rename" => {
+                self.nav = Nav::new(Route::Home);
+                tasks.push(self.navigate(Route::Playlist("pl01".into())));
+                match plan.screen.as_str() {
+                    "menu" => {
+                        if let Ok((_, page)) = crate::mock::playlist("pl01")
+                            && let Some(t) = page.items.get(2)
+                        {
+                            self.menu = Some(menu::ContextMenu {
+                                target: menu::MenuTarget::track(t, Some(("pl01".into(), 2))),
+                                at: iced::Point::new(620.0, 330.0),
+                                picker: true,
+                            });
+                        }
+                    }
+                    "shortcuts" => self.dialog = Some(menu::Dialog::Shortcuts),
+                    _ => {
+                        self.dialog = Some(menu::Dialog::Rename {
+                            id: "pl01".into(),
+                            name: "Late Night Drive".into(),
+                        })
+                    }
                 }
             }
             "queue" => {
@@ -2509,6 +2710,28 @@ mod tests {
         ))));
         assert!((app.playback.volume - 0.25).abs() < 1e-6);
         assert_eq!(app.media_snapshot().loop_status, MediaLoop::Track);
+    }
+
+    #[test]
+    fn preload_event_sends_the_next_track_to_the_engine() {
+        let (mut app, mut rx, tracks) = real_app_playing();
+        let _ = app.update(ui(Ui::PlayFrom(
+            TrackSource::Playlist("pl01".into()),
+            Some(0),
+        )));
+        while rx.try_recv().is_ok() {}
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::PreloadNext)));
+        match rx.try_recv() {
+            Ok(PlaybackCommand::Preload { uri }) => assert_eq!(uri, tracks[1].uri),
+            other => panic!("expected a preload, got {other:?}"),
+        }
+        // Repeat-one has nothing different to preload.
+        let _ = app.update(ui(Ui::CycleRepeat));
+        let _ = app.update(ui(Ui::CycleRepeat));
+        assert_eq!(app.queue.repeat, Repeat::Track);
+        while rx.try_recv().is_ok() {}
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::PreloadNext)));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

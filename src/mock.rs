@@ -428,6 +428,23 @@ pub fn lyrics(_track_id: &str) -> Option<Lyrics> {
     })
 }
 
+/// A freshly created (empty) playlist, owned by the mock user.
+pub fn new_playlist(name: &str) -> Playlist {
+    let n = NEW_PLAYLISTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = format!("new{n:04}");
+    Playlist {
+        uri: format!("spotify:playlist:{id}"),
+        id,
+        name: name.to_owned(),
+        description: String::new(),
+        owner: user().display_name,
+        images: vec![],
+        total_tracks: 0,
+    }
+}
+
+static NEW_PLAYLISTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
 pub fn playlist(id: &str) -> Result<(Playlist, Page<Track>)> {
     let i = PLAYLISTS
         .iter()

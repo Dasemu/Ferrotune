@@ -6,6 +6,7 @@ use iced::{Length, Padding};
 use super::icons::Icon;
 use super::theme::{self, FONT, M, pal};
 use super::widgets::{El, bold, card, label, vspace, wrap_grid};
+use crate::app::menu::MenuTarget;
 use crate::app::state::{LibraryFilter, Route};
 use crate::app::{App, Ui, ui};
 
@@ -46,6 +47,7 @@ pub fn view(app: &App) -> El<'_> {
                 false,
                 Icon::Music,
                 ui(Ui::Navigate(Route::Playlist(p.id.clone()))),
+                Some(app.playlist_target(p)),
             ));
         }
     }
@@ -59,6 +61,7 @@ pub fn view(app: &App) -> El<'_> {
                 false,
                 Icon::Disc,
                 ui(Ui::Navigate(Route::Album(a.id.clone()))),
+                Some(MenuTarget::album(a)),
             ));
         }
     }
@@ -72,6 +75,7 @@ pub fn view(app: &App) -> El<'_> {
                 true,
                 Icon::User,
                 ui(Ui::Navigate(Route::Artist(a.id.clone()))),
+                Some(MenuTarget::artist(a)),
             ));
         }
     }
