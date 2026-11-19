@@ -677,6 +677,83 @@ pub fn svg_hover(normal: Color, hover: Color) -> impl Fn(&Theme, svg::Status) ->
     }
 }
 
+// ------------------------------------------------------- menus and dialogs
+
+/// Context menu width and row height.
+pub const MENU_WIDTH: f32 = 240.0;
+pub const MENU_ROW: f32 = 36.0;
+
+pub fn menu_panel(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(pal().bg_elevated.into()),
+        text_color: Some(pal().text_primary),
+        border: Border {
+            radius: radius(6.0),
+            width: 1.0,
+            color: pal().border,
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.6),
+            offset: Vector::new(0.0, 8.0),
+            blur_radius: 24.0,
+        },
+        ..Default::default()
+    }
+}
+
+pub fn menu_item(_: &Theme, status: button::Status) -> button::Style {
+    let p = pal();
+    let bg =
+        matches!(status, button::Status::Hovered | button::Status::Pressed).then_some(p.row_hover);
+    btn(bg, p.text_primary, 3.0)
+}
+
+/// Dimmed backdrop behind a dialog.
+pub fn scrim(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.7).into()),
+        ..Default::default()
+    }
+}
+
+pub fn dialog_card(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(pal().bg_elevated.into()),
+        text_color: Some(pal().text_primary),
+        border: Border {
+            radius: radius(8.0),
+            ..Default::default()
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.6),
+            offset: Vector::new(0.0, 8.0),
+            blur_radius: 32.0,
+        },
+        ..Default::default()
+    }
+}
+
+/// Drop target highlight while dragging a playlist row.
+pub fn drop_line(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(pal().accent.into()),
+        ..Default::default()
+    }
+}
+
+/// A keyboard key in the shortcuts dialog.
+pub fn keycap(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(pal().chip.into()),
+        border: Border {
+            radius: radius(4.0),
+            width: 1.0,
+            color: pal().border,
+        },
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

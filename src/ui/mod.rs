@@ -2,11 +2,13 @@
 
 pub mod artist;
 pub mod collection;
+pub mod context_area;
 pub mod home;
 pub mod icons;
 pub mod library;
 pub mod login;
 pub mod lyrics;
+pub mod menu;
 pub mod now_playing;
 pub mod queue;
 pub mod search;
@@ -48,10 +50,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(theme::app_bg);
-    match &app.toast {
-        Some((msg, _)) => stack![base, toast(msg)].into(),
-        None => base.into(),
+    let mut layers = stack![base];
+    if let Some(o) = menu::overlay(app) {
+        layers = layers.push(o);
     }
+    if let Some((msg, _)) = &app.toast {
+        layers = layers.push(toast(msg));
+    }
+    layers.into()
 }
 
 fn toast<'a>(msg: &'a str) -> El<'a> {

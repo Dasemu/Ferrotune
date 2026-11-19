@@ -15,6 +15,7 @@ pub mod mpris;
 pub mod paging;
 pub mod pathfinder;
 pub mod playback;
+pub mod playlist_edit;
 pub mod proto;
 pub mod session;
 pub mod spclient;
@@ -131,6 +132,27 @@ impl DataSource {
         match self {
             Self::Spotify(b) => b.library.contains_saved(ids).await,
             Self::Mock => Ok(ids.iter().map(|id| mock::is_liked(id)).collect()),
+        }
+    }
+
+    pub async fn create_playlist(&self, name: &str) -> Result<Playlist> {
+        match self {
+            Self::Spotify(b) => b.playlists.create_playlist(name).await,
+            Self::Mock => Ok(mock::new_playlist(name)),
+        }
+    }
+
+    pub async fn edit_playlist(&self, id: &str, edit: playlist_edit::Edit) -> Result<()> {
+        match self {
+            Self::Spotify(b) => b.playlists.edit_playlist(id, edit).await,
+            Self::Mock => Ok(()),
+        }
+    }
+
+    pub async fn delete_playlist(&self, id: &str) -> Result<()> {
+        match self {
+            Self::Spotify(b) => b.playlists.delete_playlist(id).await,
+            Self::Mock => Ok(()),
         }
     }
 

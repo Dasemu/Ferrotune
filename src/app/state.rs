@@ -154,6 +154,10 @@ impl<V> Bounded<V> {
         self.0.push(k, v);
     }
 
+    pub fn remove(&mut self, k: &str) -> Option<V> {
+        self.0.pop(k)
+    }
+
     pub fn clear(&mut self) {
         self.0.clear();
     }

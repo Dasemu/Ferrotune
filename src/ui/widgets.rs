@@ -6,6 +6,7 @@ use iced::{Alignment, Color, Element, Font, Length, Padding};
 
 use super::icons::{Icon, handle};
 use super::theme::{self, FONT, FONT_BOLD, FONT_SEMIBOLD, M, pal};
+use crate::app::menu::MenuTarget;
 use crate::app::state::{Route, format_duration};
 use crate::app::{App, Message, TrackSource, Ui, ui};
 use crate::net::model::{ArtistRef, Image, Track};
@@ -148,6 +149,7 @@ pub fn artist_links<'a>(artists: &'a [ArtistRef], size: f32, muted: bool) -> El<
 }
 
 /// A square (or round) card: art, title, subtitle.
+#[allow(clippy::too_many_arguments)]
 pub fn card<'a>(
     app: &App,
     images: &[Image],
@@ -156,6 +158,7 @@ pub fn card<'a>(
     round: bool,
     fallback: Icon,
     on_press: Message,
+    target: Option<MenuTarget>,
 ) -> El<'a> {
     let content = column![
         art(app, images, M.art_card, round, fallback),
@@ -165,11 +168,15 @@ pub fn card<'a>(
     ]
     .spacing(4)
     .width(M.art_card);
-    button(content)
+    let b: El<'a> = button(content)
         .padding(12)
         .style(theme::card)
         .on_press(on_press)
-        .into()
+        .into();
+    match target {
+        Some(t) => super::menu::right_click(b, t),
+        None => b,
+    }
 }
 
 pub fn section<'a>(title: &'a str, body: El<'a>) -> El<'a> {
@@ -363,8 +370,22 @@ pub fn track_table<'a>(
         col = col.push(table_header(opts));
     }
     let key_prefix = format!("{src:?}");
+    // Rows of a playlist the user owns can be removed and dragged, as long
+    // as list positions equal the server's positions.
+    let editable: Option<&str> = match &src {
+        TrackSource::Playlist(id)
+            if app.owns_id(id)
+                && app
+                    .playlists
+                    .get(id)
+                    .is_some_and(|(_, l)| l.indices_exact()) =>
+        {
+            Some(id.as_str())
+        }
+        _ => None,
+    };
     for (i, t) in tracks.iter().enumerate() {
-        col = col.push(track_row(app, t, i, &src, &key_prefix, opts));
+        col = col.push(track_row(app, t, i, &src, &key_prefix, opts, editable));
     }
     col.into()
 }
@@ -376,11 +397,14 @@ fn track_row<'a>(
     src: &TrackSource,
     prefix: &str,
     opts: TableOpts,
+    editable: Option<&str>,
 ) -> El<'a> {
     let p = pal();
     let key = format!("{prefix}#{i}");
     let hovered = app.hovered_row.as_deref() == Some(key.as_str());
-    let selected = app.selected_row.as_deref() == Some(key.as_str());
+    let dragging = app.drag.is_some();
+    let selected = app.selected_row.as_deref() == Some(key.as_str())
+        || (dragging && hovered && app.drag.as_ref().is_some_and(|(_, from)| *from != i));
     let current = app.now_track().is_some_and(|c| c.uri == t.uri);
     let playing = current && app.now_playback().is_playing();
     let liked = app.liked_ids.contains(&t.id);
@@ -523,13 +547,20 @@ fn track_row<'a>(
                 ..Default::default()
             }
         });
-    let mut area = mouse_area(body)
-        .on_enter(ui(Ui::HoverRow(Some(key.clone()))))
-        .on_press(ui(Ui::SelectRow(key)));
+    let mut area = mouse_area(body).on_enter(ui(Ui::HoverRow(Some(key.clone()))));
+    area = if editable.is_some() {
+        area.on_press(ui(Ui::DragStart(key, i)))
+            .on_release(ui(Ui::DragDrop(i)))
+    } else {
+        area.on_press(ui(Ui::SelectRow(key)))
+    };
     if t.playable {
         area = area.on_double_click(ui(Ui::PlayFrom(src.clone(), Some(i))));
     }
-    area.into()
+    super::menu::right_click(
+        area,
+        MenuTarget::track(t, editable.map(|id| (id.to_owned(), i))),
+    )
 }
 
 /// Centered spinner-ish loading text.

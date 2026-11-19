@@ -8,6 +8,7 @@ use super::theme::{self, FONT, M, pal};
 use super::widgets::{
     El, art, bold, card, card_row, clipped, label, liked_art, loading, section, semibold, vspace,
 };
+use crate::app::menu::MenuTarget;
 use crate::app::state::Route;
 use crate::app::{App, Message, Ui, ui};
 use crate::net::model::{Card, Image};
@@ -37,6 +38,7 @@ fn home_card<'a>(app: &'a App, c: &'a Card) -> El<'a> {
             false,
             Icon::Music,
             ui(Ui::Navigate(Route::Playlist(p.id.clone()))),
+            Some(app.playlist_target(p)),
         ),
         Card::Album(a) => card(
             app,
@@ -46,6 +48,7 @@ fn home_card<'a>(app: &'a App, c: &'a Card) -> El<'a> {
             false,
             Icon::Disc,
             ui(Ui::Navigate(Route::Album(a.id.clone()))),
+            Some(MenuTarget::album(a)),
         ),
         Card::Artist(a) => card(
             app,
@@ -55,12 +58,18 @@ fn home_card<'a>(app: &'a App, c: &'a Card) -> El<'a> {
             true,
             Icon::User,
             ui(Ui::Navigate(Route::Artist(a.id.clone()))),
+            Some(MenuTarget::artist(a)),
         ),
     }
 }
 
-fn shortcut<'a>(art_el: El<'a>, title: &'a str, msg: Message) -> El<'a> {
-    button(
+fn shortcut<'a>(
+    art_el: El<'a>,
+    title: &'a str,
+    msg: Message,
+    target: Option<MenuTarget>,
+) -> El<'a> {
+    let b: El<'a> = button(
         row![art_el, clipped(semibold(title, M.font_md))]
             .spacing(12)
             .align_y(Alignment::Center),
@@ -70,7 +79,11 @@ fn shortcut<'a>(art_el: El<'a>, title: &'a str, msg: Message) -> El<'a> {
     .height(56)
     .style(theme::shortcut)
     .on_press(msg)
-    .into()
+    .into();
+    match target {
+        Some(t) => super::menu::right_click(b, t),
+        None => b,
+    }
 }
 
 fn shortcut_art<'a>(app: &App, images: &[Image]) -> El<'a> {
@@ -83,12 +96,14 @@ pub fn view(app: &App) -> El<'_> {
         liked_art(56.0),
         "Liked Songs",
         ui(Ui::Navigate(Route::Liked)),
+        None,
     )];
     for pl in app.library.playlists.iter().take(5) {
         tiles.push(shortcut(
             shortcut_art(app, &pl.images),
             &pl.name,
             ui(Ui::Navigate(Route::Playlist(pl.id.clone()))),
+            Some(app.playlist_target(pl)),
         ));
     }
     for al in app.library.albums.iter().take(8 - tiles.len()) {
@@ -96,6 +111,7 @@ pub fn view(app: &App) -> El<'_> {
             shortcut_art(app, &al.images),
             &al.name,
             ui(Ui::Navigate(Route::Album(al.id.clone()))),
+            Some(MenuTarget::album(al)),
         ));
     }
     let mut grid = column![].spacing(8);
@@ -165,6 +181,7 @@ pub fn view(app: &App) -> El<'_> {
                 false,
                 Icon::Music,
                 ui(Ui::Navigate(Route::Playlist(pl.id.clone()))),
+                Some(app.playlist_target(pl)),
             )
         })
         .collect();

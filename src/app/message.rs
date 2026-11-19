@@ -2,6 +2,8 @@
 
 use std::time::Instant;
 
+use super::menu::MenuTarget;
+use super::playlists::EditSnapshot;
 use super::state::{LibraryFilter, Route, SearchFilter};
 use crate::error::Result;
 use crate::net::DataSource;
@@ -68,6 +70,32 @@ pub enum Ui {
     Scrolled(f32),
     DismissToast,
     Tick(Instant),
+    // keyboard shortcuts and overlays
+    FocusSearch,
+    VolumeStep(f32),
+    Quit,
+    ToggleHelp,
+    /// Escape: closes the context menu, then any dialog.
+    CloseOverlay,
+    WindowResized(iced::Size),
+    // context menu
+    OpenMenu(MenuTarget, iced::Point),
+    ToggleMenuPicker,
+    CopyLink(String),
+    // playlist editing
+    NewPlaylist,
+    OpenRename(String),
+    OpenDelete(String),
+    DialogInput(String),
+    DialogSubmit,
+    AddToPlaylist(String, Track),
+    RemoveFromPlaylist(String, usize),
+    /// Left button pressed on a row of an editable playlist: `(row key, index)`.
+    DragStart(String, usize),
+    /// Left button released over row `index` while a drag may be active.
+    DragDrop(usize),
+    /// Left button released anywhere: ends a drag.
+    MouseUp,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +132,10 @@ pub enum Done {
     Image(String, Result<DecodedImage>),
     Lyrics(String, Result<Option<Lyrics>>),
     LikeSaved(String, bool, Result<()>),
+    /// Create finished: `(temporary id, result)`.
+    PlaylistCreated(String, Result<Playlist>),
+    /// An edit finished; on error the snapshot is restored.
+    PlaylistEdited(Box<EditSnapshot>, &'static str, Result<()>),
     LikedFlags(Vec<String>, Result<Vec<bool>>),
     ReconnectAudio,
     Screenshot(iced::window::Screenshot),
