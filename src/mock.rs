@@ -166,52 +166,47 @@ const PLAYLISTS: &[(&str, &str, &str, &str)] = &[
         "pl01",
         "Late Night Drive",
         "Synths, city lights and empty highways.",
-        "Mock Listener",
+        "mockuser",
     ),
     (
         "pl02",
         "Focus Flow",
         "Instrumental beats to keep you in the zone.",
-        "Ferrotune",
+        "spotify",
     ),
     (
         "pl03",
         "Sunday Morning",
         "Slow coffee, soft vocals.",
-        "Mock Listener",
+        "mockuser",
     ),
     (
         "pl04",
         "Indie Garden",
         "Fresh indie picks, updated weekly.",
-        "Ferrotune",
+        "spotify",
     ),
-    (
-        "pl05",
-        "Workout Mix",
-        "High tempo, no skips.",
-        "Mock Listener",
-    ),
+    ("pl05", "Workout Mix", "High tempo, no skips.", "mockuser"),
     (
         "pl06",
         "Rainy Day Jazz",
         "Brushes, upright bass and rain on the window.",
-        "Ferrotune",
+        "spotify",
     ),
-    ("pl07", "Road Trip 2025", "Windows down.", "Mock Listener"),
+    ("pl07", "Road Trip 2025", "Windows down.", "mockuser"),
     (
         "pl08",
         "Deep Focus",
         "Ambient textures for deep work.",
-        "Ferrotune",
+        "spotify",
     ),
     (
         "pl09",
         "Throwback Jams",
         "The songs you forgot you loved.",
-        "Mock Listener",
+        "mockuser",
     ),
-    ("pl10", "Chill Vibes", "Kick back and relax.", "Ferrotune"),
+    ("pl10", "Chill Vibes", "Kick back and relax.", "x7friend"),
 ];
 
 pub fn image_url(seed: &str) -> String {
@@ -328,6 +323,8 @@ fn playlist_at(i: usize) -> Playlist {
         description: desc.into(),
         owner: owner.into(),
         images: images(id),
+        can_edit: None,
+        mosaic: Vec::new(),
         total_tracks: playlist_tracks(i).len() as u32,
     }
 }
@@ -341,9 +338,44 @@ pub fn user() -> User {
     }
 }
 
+/// Public profile for the mock users.
+pub fn profile(user: &str) -> crate::net::model::UserProfile {
+    let name = match user {
+        "mockuser" => "Mock Listener",
+        "x7friend" => "Riley",
+        "spotify" => "Spotify",
+        other => other,
+    };
+    let playlists: Vec<Playlist> = (0..PLAYLISTS.len())
+        .map(playlist_at)
+        .filter(|p| p.owner == user)
+        .collect();
+    crate::net::model::UserProfile {
+        id: user.to_owned(),
+        name: name.to_owned(),
+        image: None,
+        followers: Some(42),
+        following: Some(17),
+        total_playlists: Some(playlists.len() as u64),
+        playlists,
+    }
+}
+
 pub fn library() -> Library {
     Library {
-        playlists: (0..PLAYLISTS.len()).map(playlist_at).collect(),
+        playlists: (0..PLAYLISTS.len())
+            .map(playlist_at)
+            .map(|mut p| {
+                // Like a personalised list in a real rootlist: no name or
+                // picture until its own attributes are fetched.
+                if p.id == "pl08" {
+                    p.name.clear();
+                    p.description.clear();
+                    p.images.clear();
+                }
+                p
+            })
+            .collect(),
         albums: (0..ALBUMS.len())
             .map(|i| {
                 let mut a = album_full(i);
@@ -439,6 +471,8 @@ pub fn new_playlist(name: &str) -> Playlist {
         description: String::new(),
         owner: user().display_name,
         images: vec![],
+        can_edit: None,
+        mosaic: Vec::new(),
         total_tracks: 0,
     }
 }
@@ -593,6 +627,57 @@ pub fn image(url: &str, max_px: u32) -> DecodedImage {
         }
     }
     DecodedImage::from_rgba(size, size, rgba)
+}
+
+/// The user's other Spotify Connect devices, for screenshots.
+pub fn cluster() -> crate::net::connect_ctl::ClusterState {
+    use crate::net::connect_ctl::{
+        ClusterPlayer, ClusterState, ClusterTrack, DeviceKind, RemoteDevice,
+    };
+    let t = playlist_tracks(1).into_iter().next();
+    ClusterState {
+        active_device_id: Some("phone".into()),
+        devices: vec![
+            RemoteDevice {
+                id: "phone".into(),
+                name: "Pixel 8".into(),
+                kind: DeviceKind::Smartphone,
+                volume: Some(0.6),
+                is_active: true,
+            },
+            RemoteDevice {
+                id: "speaker".into(),
+                name: "Living Room".into(),
+                kind: DeviceKind::Speaker,
+                volume: Some(0.4),
+                is_active: false,
+            },
+            RemoteDevice {
+                id: "desk".into(),
+                name: "Office PC".into(),
+                kind: DeviceKind::Computer,
+                volume: Some(1.0),
+                is_active: false,
+            },
+        ],
+        player: t.map(|t| ClusterPlayer {
+            track: Some(ClusterTrack {
+                uri: t.uri.clone(),
+                name: t.name.clone(),
+                artists: t.artists.iter().map(|a| a.name.clone()).collect(),
+                album: t.album.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
+                cover_url: crate::net::model::pick_image(t.images(), 300).map(|i| i.url.clone()),
+            }),
+            context_uri: "spotify:playlist:pl02".into(),
+            is_playing: true,
+            is_paused: false,
+            position_ms: 64_000,
+            duration_ms: t.duration_ms,
+            shuffle: false,
+            repeat_context: true,
+            repeat_track: false,
+        }),
+    }
 }
 
 #[cfg(test)]

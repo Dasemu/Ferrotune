@@ -19,7 +19,8 @@ pub use super::session::SpotifySession;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EngineKind {
     Mock,
-    Librespot(BitrateKey),
+    /// Bitrate and volume normalisation (a change restarts the engine).
+    Librespot(BitrateKey, bool),
 }
 
 /// Hashable mirror of [`Bitrate`] for subscription identity.
@@ -61,6 +62,8 @@ pub enum PlaybackCommand {
     SetVolume(f32),
     /// Control the Spotify Connect playback (while another device cast to us).
     Remote(RemoteCommand),
+    /// Re-read the user's Connect devices (the picker opened).
+    RefreshDevices,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -153,12 +156,15 @@ pub enum PlaybackEvent {
     },
     Unavailable {
         uri: String,
+        reason: super::audio_diag::UnavailableReason,
     },
     /// The audio session or player died (network drop, suspend/resume,
     /// revoked token). The app must reconnect and re-attach.
     SessionLost,
     /// Spotify Connect: another device is controlling playback here.
     Remote(RemoteEvent),
+    /// The user's Connect devices and what the active one plays.
+    Cluster(super::connect_ctl::ClusterState),
     Error(String),
 }
 
@@ -172,8 +178,8 @@ pub fn events(kind: EngineKind) -> impl Stream<Item = PlaybackEvent> + Send + 's
             EngineKind::Mock => {
                 tokio::spawn(run_mock(cmd_rx, ev_tx));
             }
-            EngineKind::Librespot(b) => {
-                tokio::spawn(run_librespot(b, cmd_rx, ev_tx));
+            EngineKind::Librespot(b, norm) => {
+                tokio::spawn(run_librespot(b, norm, cmd_rx, ev_tx));
             }
         }
         let ready =
@@ -204,6 +210,7 @@ impl MockEngine {
         match cmd {
             PlaybackCommand::Attach(_)
             | PlaybackCommand::Remote(_)
+            | PlaybackCommand::RefreshDevices
             | PlaybackCommand::Preload { .. } => vec![],
             PlaybackCommand::Load {
                 uri,
@@ -354,6 +361,9 @@ fn map_player_event(e: librespot_playback::player::PlayerEvent) -> Option<Playba
         },
         P::Unavailable { track_id, .. } => PlaybackEvent::Unavailable {
             uri: uri_string(&track_id),
+            // Read what librespot logged while loading (it does not put the
+            // reason into the event).
+            reason: super::audio_diag::RECORDER.take(std::time::Instant::now()),
         },
         P::Stopped { .. } => PlaybackEvent::Stopped,
         P::TimeToPreloadNextTrack { .. } => PlaybackEvent::PreloadNext,
@@ -362,7 +372,10 @@ fn map_player_event(e: librespot_playback::player::PlayerEvent) -> Option<Playba
 }
 
 /// Player configuration shared by the local and the Connect player.
-pub fn player_config(bitrate: BitrateKey) -> librespot_playback::config::PlayerConfig {
+pub fn player_config(
+    bitrate: BitrateKey,
+    normalisation: bool,
+) -> librespot_playback::config::PlayerConfig {
     use librespot_playback::config::{Bitrate as LBitrate, PlayerConfig};
     PlayerConfig {
         bitrate: match bitrate {
@@ -371,6 +384,7 @@ pub fn player_config(bitrate: BitrateKey) -> librespot_playback::config::PlayerC
             BitrateKey::High => LBitrate::Bitrate320,
         },
         position_update_interval: Some(Duration::from_secs(1)),
+        normalisation,
         ..PlayerConfig::default()
     }
 }
@@ -423,6 +437,7 @@ pub fn map_remote_event(e: librespot_playback::player::PlayerEvent) -> Option<Re
 
 async fn run_librespot(
     bitrate: BitrateKey,
+    normalisation: bool,
     mut cmd_rx: mpsc::UnboundedReceiver<PlaybackCommand>,
     ev_tx: mpsc::UnboundedSender<PlaybackEvent>,
 ) {
@@ -447,6 +462,10 @@ async fn run_librespot(
     let mut remote_events: Option<librespot_playback::player::PlayerEventChannel> = None;
     // True while another device plays through our Connect device.
     let mut remote_active = false;
+    // Connect controller: the user's devices (net::connect_ctl).
+    let refresh = Arc::new(tokio::sync::Notify::new());
+    let mut observer: Option<tokio::task::JoinHandle<()>> = None;
+    let (cluster_tx, mut cluster_rx) = mpsc::unbounded_channel();
     let mut health = tokio::time::interval(Duration::from_secs(2));
     health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -466,6 +485,12 @@ async fn run_librespot(
                     || player.as_ref().is_some_and(|p| p.is_invalid());
                 if dead {
                     lost(&mut session);
+                }
+                continue;
+            }
+            Some(c) = cluster_rx.recv() => {
+                if ev_tx.send(PlaybackEvent::Cluster(c)).is_err() {
+                    return;
                 }
                 continue;
             }
@@ -515,6 +540,9 @@ async fn run_librespot(
                             lost(&mut session);
                             continue;
                         }
+                        if let Some(PlaybackEvent::Unavailable { reason, .. }) = &mapped {
+                            tracing::debug!(?reason, "player reported the track unavailable");
+                        }
                         if let Some(mapped) = mapped
                             && ev_tx.send(mapped).is_err()
                         {
@@ -534,6 +562,20 @@ async fn run_librespot(
         };
         match cmd {
             PlaybackCommand::Attach(new_session) => {
+                if let Some(o) = observer.take() {
+                    o.abort();
+                }
+                if new_session.connect.is_some() {
+                    let s = new_session.session.clone();
+                    let own = s.device_id().to_owned();
+                    observer = Some(tokio::spawn(super::connect_ctl::observe(
+                        s,
+                        own,
+                        crate::config::APP_NAME.to_owned(),
+                        refresh.clone(),
+                        cluster_tx.clone(),
+                    )));
+                }
                 session = Some(new_session.session.clone());
                 connect = new_session.connect.clone();
                 remote_events = connect.as_ref().and_then(|c| c.take_events());
@@ -542,7 +584,7 @@ async fn run_librespot(
                     p.set_session(new_session.session);
                     continue;
                 }
-                let config = player_config(bitrate);
+                let config = player_config(bitrate, normalisation);
                 let Some(backend) = audio_backend::find(None) else {
                     let _ = ev_tx.send(PlaybackEvent::Error("no audio backend".into()));
                     continue;
@@ -561,6 +603,7 @@ async fn run_librespot(
                 pending_volume = v.clamp(0.0, 1.0);
                 mixer.set_volume(volume_to_u16(pending_volume));
             }
+            PlaybackCommand::RefreshDevices => refresh.notify_one(),
             PlaybackCommand::Remote(rc) => {
                 let Some(c) = &connect else { continue };
                 let r = match rc {
@@ -598,9 +641,21 @@ async fn run_librespot(
                         position_ms,
                         ..
                     } => match librespot_core::SpotifyUri::from_uri(&uri) {
-                        Ok(u) => p.load(u, start, position_ms),
-                        Err(_) => {
-                            let _ = ev_tx.send(PlaybackEvent::Unavailable { uri });
+                        Ok(u) => {
+                            tracing::debug!(
+                                kind = u.item_type(),
+                                start,
+                                position_ms,
+                                "loading track"
+                            );
+                            p.load(u, start, position_ms);
+                        }
+                        Err(e) => {
+                            tracing::debug!(error = %e, "not a playable Spotify URI");
+                            let _ = ev_tx.send(PlaybackEvent::Unavailable {
+                                uri,
+                                reason: super::audio_diag::UnavailableReason::Fetch,
+                            });
                         }
                     },
                     PlaybackCommand::Play => p.play(),
@@ -614,6 +669,7 @@ async fn run_librespot(
                     }
                     PlaybackCommand::Attach(_)
                     | PlaybackCommand::SetVolume(_)
+                    | PlaybackCommand::RefreshDevices
                     | PlaybackCommand::Remote(_) => {}
                 }
             }

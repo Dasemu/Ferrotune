@@ -3,6 +3,7 @@
 pub mod artist;
 pub mod collection;
 pub mod context_area;
+pub mod devices;
 pub mod home;
 pub mod icons;
 pub mod library;
@@ -10,8 +11,10 @@ pub mod login;
 pub mod lyrics;
 pub mod menu;
 pub mod now_playing;
+pub mod profile;
 pub mod queue;
 pub mod search;
+pub mod settings;
 pub mod sidebar;
 pub mod theme;
 pub mod topbar;
@@ -27,6 +30,10 @@ use widgets::{El, icon, primary};
 
 pub fn view(app: &App) -> Element<'_, Message> {
     app.mark_frame();
+    // The theme can change on the Settings screen.
+    if theme::current().dark != (app.settings.theme == crate::config::ThemeChoice::Dark) {
+        theme::set_current(theme::FerroTheme::new(app.settings.theme));
+    }
     if !app.auth.is_signed_in() {
         return login::view(app);
     }
@@ -38,19 +45,30 @@ pub fn view(app: &App) -> Element<'_, Message> {
     } else if app.show_lyrics {
         panels = panels.push(lyrics::view(app));
     }
-    let body = column![topbar::view(app), panels, now_playing::view(app)]
-        .spacing(0)
-        .padding(Padding {
-            top: 0.0,
-            right: M.gap,
-            bottom: 0.0,
-            left: M.gap,
-        });
+    let mut body = column![topbar::view(app), panels, now_playing::view(app)].spacing(0);
+    if let Some(strip) = devices::playing_on(app) {
+        body = body.push(container(strip).padding(Padding {
+            bottom: 6.0,
+            ..Padding::ZERO
+        }));
+    }
+    let body = body.padding(Padding {
+        top: 0.0,
+        right: M.gap,
+        bottom: 0.0,
+        left: M.gap,
+    });
     let base = container(body)
         .width(Length::Fill)
         .height(Length::Fill)
         .style(theme::app_bg);
     let mut layers = stack![base];
+    if app.device_picker {
+        layers = layers.push(devices::picker(app));
+    }
+    if app.user_menu {
+        layers = layers.push(topbar::user_menu(app));
+    }
     if let Some(o) = menu::overlay(app) {
         layers = layers.push(o);
     }
@@ -120,6 +138,8 @@ fn main_panel(app: &App) -> El<'_> {
         Route::Playlist(id) => collection::playlist(app, id),
         Route::Album(id) => collection::album(app, id),
         Route::Artist(id) => artist::view(app, id),
+        Route::Profile(u) => profile::view(app, u),
+        Route::Settings => settings::view(app),
     };
     let scroll = scrollable(content)
         .on_scroll(|v| ui(Ui::Scrolled(v.relative_offset().y)))
@@ -127,6 +147,9 @@ fn main_panel(app: &App) -> El<'_> {
         .height(Length::Fill)
         .width(Length::Fill);
     let mut col = column![].spacing(0);
+    if let Some(b) = devices::block_banner(app) {
+        col = col.push(container(b).padding(8));
+    }
     if let Some(b) = banner(app) {
         col = col.push(container(b).padding(8));
     }

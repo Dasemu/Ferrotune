@@ -107,6 +107,76 @@ pub fn art<'a>(app: &App, images: &[Image], size: f32, round: bool, fallback: Ic
     }
 }
 
+/// Playlist cover: its picture, else a 2x2 mosaic of the first tracks'
+/// covers (like the official client), else a placeholder.
+pub fn playlist_art<'a>(app: &App, p: &crate::net::model::Playlist, size: f32) -> El<'a> {
+    if p.images.is_empty() && p.mosaic.len() == 4 {
+        let half = (size / 2.0).floor();
+        let px = if half > 64.0 { 300 } else { 64 };
+        let tile = |url: &str| -> El<'a> {
+            let img = [Image {
+                url: url.to_owned(),
+                width: Some(300),
+                height: Some(300),
+            }];
+            match app.image(&img, px) {
+                Some(h) => image(h)
+                    .width(half)
+                    .height(half)
+                    .content_fit(iced::ContentFit::Cover)
+                    .into(),
+                None => container(Space::new())
+                    .width(half)
+                    .height(half)
+                    .style(theme::art_placeholder(false, half))
+                    .into(),
+            }
+        };
+        let m = &p.mosaic;
+        return container(column![
+            row![tile(&m[0]), tile(&m[1])],
+            row![tile(&m[2]), tile(&m[3])]
+        ])
+        .width(half * 2.0)
+        .height(half * 2.0)
+        .clip(true)
+        .into();
+    }
+    art(app, &p.images, size, false, Icon::Music)
+}
+
+/// A playlist card (title falls back to "Playlist" while metadata loads).
+pub fn playlist_card<'a>(
+    app: &App,
+    p: &'a crate::net::model::Playlist,
+    subtitle: String,
+    on_press: Message,
+    target: Option<MenuTarget>,
+) -> El<'a> {
+    let title: &'a str = if p.name.trim().is_empty() {
+        "Playlist"
+    } else {
+        p.name.as_str()
+    };
+    let content = column![
+        playlist_art(app, p, M.art_card),
+        vspace(4.0),
+        clipped(semibold(title, M.font_md)),
+        clipped(secondary(subtitle, M.font_sm)),
+    ]
+    .spacing(4)
+    .width(M.art_card);
+    let b: El<'a> = button(content)
+        .padding(12)
+        .style(theme::card)
+        .on_press(on_press)
+        .into();
+    match target {
+        Some(t) => super::menu::right_click(b, t),
+        None => b,
+    }
+}
+
 /// The gradient "Liked Songs" tile.
 pub fn liked_art<'a>(size: f32) -> El<'a> {
     container(icon(Icon::HeartFilled, size * 0.4, Color::WHITE))

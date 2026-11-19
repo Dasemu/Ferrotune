@@ -72,7 +72,6 @@ fn main() -> iced::Result {
     ferrotune::logging::init((!mock).then(|| config.log_path()).as_deref());
     let ferro = theme::FerroTheme::new(config.theme);
     theme::set_current(ferro);
-    let iced_theme = ferro.to_iced();
     let opts = Options {
         screenshot,
         started: Some(started),
@@ -85,7 +84,7 @@ fn main() -> iced::Result {
     )
     .title(App::title)
     .subscription(App::subscription)
-    .theme(move |_: &App| iced_theme.clone())
+    .theme(|app: &App| theme::FerroTheme::new(app.settings.theme).to_iced())
     .font(theme::INTER_REGULAR)
     .font(theme::INTER_SEMIBOLD)
     .font(theme::INTER_BOLD)

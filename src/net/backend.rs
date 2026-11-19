@@ -20,6 +20,7 @@ use futures::future::BoxFuture;
 
 use super::model::{
     Album, ArtistPage, HomeFeed, Library, Lyrics, Page, Playlist, SearchResults, Track, User,
+    UserProfile,
 };
 use super::playlist_edit::Edit;
 use crate::error::Result;
@@ -43,6 +44,8 @@ pub trait LibraryApi: Send + Sync {
     fn saved_tracks(&self, offset: u32) -> BoxFuture<'_, Result<Page<Track>>>;
     fn contains_saved(&self, ids: Vec<String>) -> BoxFuture<'_, Result<Vec<bool>>>;
     fn set_saved(&self, ids: Vec<String>, saved: bool) -> BoxFuture<'_, Result<()>>;
+    /// Public profile of `user`; `playlists` = how many public playlists.
+    fn profile<'a>(&'a self, user: &'a str, playlists: u32) -> BoxFuture<'a, Result<UserProfile>>;
 }
 
 /// Playlist editing (playlist4 changes). Every call refetches the list's

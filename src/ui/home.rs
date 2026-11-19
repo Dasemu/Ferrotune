@@ -26,17 +26,14 @@ fn greeting() -> &'static str {
 
 fn home_card<'a>(app: &'a App, c: &'a Card) -> El<'a> {
     match c {
-        Card::Playlist(p) => card(
+        Card::Playlist(p) => super::widgets::playlist_card(
             app,
-            &p.images,
-            &p.name,
+            p,
             if p.description.is_empty() {
-                p.owner.clone()
+                app.owner_label(&p.owner)
             } else {
                 p.description.clone()
             },
-            false,
-            Icon::Music,
             ui(Ui::Navigate(Route::Playlist(p.id.clone()))),
             Some(app.playlist_target(p)),
         ),

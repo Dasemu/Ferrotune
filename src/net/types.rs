@@ -8,11 +8,12 @@
 //!   change over time. An entry we cannot understand is dropped, never fatal.
 
 use librespot_protocol::metadata;
-use librespot_protocol::playlist4_external::SelectedListContent;
+use librespot_protocol::playlist4_external::{ListAttributes, SelectedListContent};
 use serde_json::Value;
 
 use super::model::{
     Album, AlbumKind, AlbumRef, Artist, ArtistRef, Image, LyricLine, Lyrics, Playlist, Track,
+    UserProfile,
 };
 
 pub const IMAGE_CDN: &str = "https://i.scdn.co/image/";
@@ -217,27 +218,86 @@ pub fn artist_release_ids(a: &metadata::Artist, cap: usize) -> Vec<String> {
         .collect()
 }
 
+/// Cover of a playlist: its own `picture`, else the server-rendered sizes
+/// (`picture_size`, used by mosaics and personalised lists such as Daily
+/// Mix), else an `image_url` format attribute. Only https URLs are kept.
+pub fn list_images(attrs: Option<&ListAttributes>) -> Vec<Image> {
+    let Some(a) = attrs else {
+        return Vec::new();
+    };
+    if !a.picture().is_empty() {
+        return vec![Image {
+            url: image_url(a.picture()),
+            width: Some(300),
+            height: Some(300),
+        }];
+    }
+    let px = |target: &str| match target {
+        "small" => Some(60),
+        "default" => Some(300),
+        "large" => Some(640),
+        "xlarge" => Some(1000),
+        _ => None,
+    };
+    let sized: Vec<Image> = a
+        .picture_size
+        .iter()
+        .filter(|p| p.url().starts_with("https://"))
+        .map(|p| {
+            let w = px(p.target_name());
+            Image {
+                url: p.url().to_owned(),
+                width: w,
+                height: w,
+            }
+        })
+        .collect();
+    if !sized.is_empty() {
+        return sized;
+    }
+    a.format_attributes
+        .iter()
+        .find(|f| f.key() == "image_url" && f.value().starts_with("https://"))
+        .map(|f| {
+            vec![Image {
+                url: f.value().to_owned(),
+                width: None,
+                height: None,
+            }]
+        })
+        .unwrap_or_default()
+}
+
+/// Name of a playlist; personalised lists may carry it only as a format
+/// attribute.
+fn list_name(attrs: Option<&ListAttributes>) -> String {
+    let Some(a) = attrs else {
+        return String::new();
+    };
+    if !a.name().trim().is_empty() {
+        return a.name().to_owned();
+    }
+    a.format_attributes
+        .iter()
+        .find(|f| matches!(f.key(), "title" | "name") && !f.value().trim().is_empty())
+        .map(|f| f.value().to_owned())
+        .unwrap_or_default()
+}
+
 /// Playlist header from a `SelectedListContent`.
 pub fn playlist(id: &str, c: &SelectedListContent) -> Playlist {
     let attrs = c.attributes.as_ref();
-    let picture = attrs.map(|a| a.picture()).filter(|p| !p.is_empty());
     Playlist {
         id: id.to_owned(),
         uri: format!("spotify:playlist:{id}"),
-        name: attrs.map(|a| a.name().to_owned()).unwrap_or_default(),
+        name: list_name(attrs),
         description: attrs
             .map(|a| a.description().to_owned())
             .unwrap_or_default(),
         owner: c.owner_username().to_owned(),
-        images: picture
-            .map(|p| {
-                vec![Image {
-                    url: image_url(p),
-                    width: Some(300),
-                    height: Some(300),
-                }]
-            })
-            .unwrap_or_default(),
+        images: list_images(attrs),
+        can_edit: c.capabilities.as_ref().and_then(|k| k.can_edit_items),
+        mosaic: Vec::new(),
         total_tracks: u32::try_from(c.length()).unwrap_or(0),
     }
 }
@@ -274,26 +334,21 @@ pub fn rootlist(c: &SelectedListContent) -> Vec<Playlist> {
             }
             let meta = contents.meta_items.get(i);
             let attrs = meta.and_then(|m| m.attributes.as_ref());
-            let picture = attrs.map(|a| a.picture()).filter(|p| !p.is_empty());
             Some(Playlist {
                 id: id.to_owned(),
                 uri: format!("spotify:playlist:{id}"),
-                name: attrs.map(|a| a.name().to_owned()).unwrap_or_default(),
+                name: list_name(attrs),
                 description: attrs
                     .map(|a| a.description().to_owned())
                     .unwrap_or_default(),
                 owner: meta
                     .map(|m| m.owner_username().to_owned())
                     .unwrap_or_default(),
-                images: picture
-                    .map(|p| {
-                        vec![Image {
-                            url: image_url(p),
-                            width: Some(300),
-                            height: Some(300),
-                        }]
-                    })
-                    .unwrap_or_default(),
+                images: list_images(attrs),
+                can_edit: meta
+                    .and_then(|m| m.capabilities.as_ref())
+                    .and_then(|k| k.can_edit_items),
+                mosaic: Vec::new(),
                 total_tracks: meta
                     .and_then(|m| u32::try_from(m.length()).ok())
                     .unwrap_or(0),
@@ -450,6 +505,8 @@ pub fn gql_playlist(d: &Value) -> Option<Playlist> {
         description: s(d, "/description").unwrap_or_default(),
         owner: s(d, "/ownerV2/data/name").unwrap_or_default(),
         images: sources(d.pointer("/images/items/0/sources")),
+        can_edit: None,
+        mosaic: Vec::new(),
         total_tracks: 0,
     })
 }
@@ -475,6 +532,63 @@ pub fn lyrics(v: &Value) -> Option<Lyrics> {
         lines,
         provider: s(l, "/providerDisplayName"),
     })
+}
+
+/// Parse `user-profile-view/v3/profile/<user>` JSON. Unknown or missing
+/// fields are left empty; the username is the fallback name.
+pub fn user_profile(username: &str, v: &Value) -> UserProfile {
+    let str_at = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    let https = |u: Option<String>| u.filter(|u| u.starts_with("https://"));
+    let playlists = v
+        .get("public_playlists")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| {
+                    let uri = str_at(p, "uri")?;
+                    let (kind, id) = split_uri(&uri)?;
+                    if kind != "playlist" {
+                        return None;
+                    }
+                    let owner = str_at(p, "owner_uri")
+                        .and_then(|o| o.strip_prefix("spotify:user:").map(str::to_owned))
+                        .unwrap_or_else(|| username.to_owned());
+                    Some(Playlist {
+                        id: id.to_owned(),
+                        uri: format!("spotify:playlist:{id}"),
+                        name: str_at(p, "name").unwrap_or_default(),
+                        description: String::new(),
+                        owner,
+                        images: https(str_at(p, "image_url"))
+                            .map(|url| {
+                                vec![Image {
+                                    url,
+                                    width: None,
+                                    height: None,
+                                }]
+                            })
+                            .unwrap_or_default(),
+                        can_edit: None,
+                        mosaic: Vec::new(),
+                        total_tracks: 0,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    UserProfile {
+        id: username.to_owned(),
+        name: str_at(v, "name")
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| username.to_owned()),
+        image: https(str_at(v, "image_url")),
+        followers: v.get("followers_count").and_then(Value::as_u64),
+        following: v.get("following_count").and_then(Value::as_u64),
+        playlists,
+        total_playlists: v
+            .get("total_public_playlists_count")
+            .and_then(Value::as_u64),
+    }
 }
 
 #[cfg(test)]
@@ -572,5 +686,64 @@ mod tests {
         assert!(l.synced);
         assert_eq!(l.lines[1].start_ms, 3000);
         assert_eq!(l.provider.as_deref(), Some("Provider"));
+    }
+
+    #[test]
+    fn user_profile_parses_and_tolerates_junk() {
+        let v: Value = serde_json::json!({
+            "uri": "spotify:user:0d2x",
+            "name": "Ana",
+            "image_url": "https://i.scdn.co/image/ab",
+            "followers_count": 12,
+            "following_count": 3,
+            "total_public_playlists_count": 2,
+            "public_playlists": [
+                {"uri": "spotify:playlist:p1", "name": "Road", "image_url": "https://mosaic.scdn.co/640/x", "owner_uri": "spotify:user:0d2x"},
+                {"uri": "spotify:artist:nope"},
+                {"name": "no uri"}
+            ]
+        });
+        let p = user_profile("0d2x", &v);
+        assert_eq!(p.name, "Ana");
+        assert_eq!(p.followers, Some(12));
+        assert_eq!(p.following, Some(3));
+        assert_eq!(p.playlists.len(), 1);
+        assert_eq!(p.playlists[0].owner, "0d2x");
+        let empty = user_profile("bob", &serde_json::json!({"image_url": "http://x"}));
+        assert_eq!(empty.name, "bob");
+        assert_eq!(empty.image, None);
+    }
+
+    #[test]
+    fn list_images_fall_back_to_picture_sizes_and_format_attributes() {
+        use librespot_protocol::playlist4_external::{FormatListAttribute, PictureSize};
+        let mut a = ListAttributes::new();
+        assert!(list_images(Some(&a)).is_empty());
+        let mut f = FormatListAttribute::new();
+        f.set_key("image_url".into());
+        f.set_value("https://dailymix-images.scdn.co/x".into());
+        a.format_attributes.push(f);
+        assert_eq!(
+            list_images(Some(&a))[0].url,
+            "https://dailymix-images.scdn.co/x"
+        );
+        let mut ps = PictureSize::new();
+        ps.set_target_name("large".into());
+        ps.set_url("https://mosaic.scdn.co/640/abc".into());
+        a.picture_size.push(ps);
+        let mut bad = PictureSize::new();
+        bad.set_url("javascript:x".into());
+        a.picture_size.push(bad);
+        let imgs = list_images(Some(&a));
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(imgs[0].width, Some(640));
+        a.set_picture(GID.to_vec());
+        assert!(list_images(Some(&a))[0].url.starts_with(IMAGE_CDN));
+        let mut named = ListAttributes::new();
+        let mut t = FormatListAttribute::new();
+        t.set_key("title".into());
+        t.set_value("Daily Mix 1".into());
+        named.format_attributes.push(t);
+        assert_eq!(list_name(Some(&named)), "Daily Mix 1");
     }
 }

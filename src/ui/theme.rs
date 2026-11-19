@@ -354,6 +354,33 @@ pub fn banner(_: &Theme) -> container::Style {
     }
 }
 
+/// "Playing on <device>" strip (Spotify Connect).
+pub fn connect_strip(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(pal().accent.into()),
+        text_color: Some(pal().accent_text),
+        border: Border {
+            radius: radius(4.0),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// Persistent playback error banner.
+pub fn error_banner(_: &Theme) -> container::Style {
+    let p = pal();
+    container::Style {
+        background: Some(mix(p.bg_elevated, p.danger, 0.35).into()),
+        text_color: Some(p.text_primary),
+        border: Border {
+            radius: radius(6.0),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 pub fn login_card(_: &Theme) -> container::Style {
     container::Style {
         background: Some(pal().bg_panel.into()),

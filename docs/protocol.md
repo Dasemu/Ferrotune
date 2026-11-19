@@ -87,13 +87,16 @@ host: `https://api-partner.spotify.com`. Both can be overridden for tests
 
 | Backend (trait) | Data | Endpoint | Format |
 |---|---|---|---|
-| `LibraryApi::me` | display name, avatar | `GET /user-profile-view/v3/profile/{user}` | JSON |
+| `LibraryApi::me` | display name, avatar | `GET /user-profile-view/v3/profile/{user}` (failure falls back to the username) | JSON |
+| `LibraryApi::profile` | profile page, playlist owner names | `GET /user-profile-view/v3/profile/{user}?playlist_limit=N&artist_limit=0&episode_limit=0&market=from_token` | JSON |
 | `LibraryApi::library` | sidebar playlists | `GET /playlist/v2/user/{user}/rootlist?decorate=revision,attributes,length,owner,capabilities,status_code&from=0&length=500` | playlist4 `SelectedListContent` |
 | `LibraryApi::library` / `saved_tracks` | Liked Songs + saved albums | `POST /collection/v2/paging` set `collection` (300/page), then `POST /collection/v2/delta` with the last sync token | collection2v2 (`application/vnd.collection-v2.spotify.proto`) |
 | `LibraryApi::library` | followed artists | same, set `artist` | collection2v2 |
 | `LibraryApi::set_saved` | like / unlike | `POST /collection/v2/write` | collection2v2 `WriteRequest` |
 | `LibraryApi::contains_saved` | heart state | answered from the synced collection index, with no request | — |
-| `CatalogApi::playlist(_tracks)` | playlist + entries | `GET /playlist/v2/playlist/{id}?from=&length=100` | playlist4 |
+| `CatalogApi::playlist(_tracks)` | playlist + entries | `GET /playlist/v2/playlist/{id}?decorate=revision,length,attributes,timestamp,owner,capabilities&from=&length=100` | playlist4 |
+| `connect_ctl` | Connect devices | `PUT /connect-state/v1/devices/hobs_{device id}` (hidden observer, `PICKER_OPENED`) + dealer `hm://connect-state/v1/cluster` | connect `PutStateRequest` → `Cluster` |
+| `connect_ctl` | control another device | `POST /connect-state/v1/player/command/from/{us}/to/{it}`, `POST …/connect/transfer/from/{us}/to/{it}`, `PUT …/connect/volume/from/{us}/to/{it}` | JSON |
 | `CatalogApi::*` | track / album / artist metadata | `POST /extended-metadata/v0/extended-metadata`, **batched** (≤100 URIs), `TRACK_V4` / `ALBUM_V4` / `ARTIST_V4` | `BatchedEntityRequest` → `metadata.Track/Album/Artist` |
 | `PlaylistApi::create_playlist` | create | `POST /playlist/v2/playlist` (`ListUpdateRequest` with the name), then add to the rootlist | playlist4 |
 | `PlaylistApi::edit_playlist` | add / remove / move / rename | `POST /playlist/v2/playlist/{id}/changes` (`ListChanges`: one `Delta` with `ADD` / `REM` / `MOV` / `UPDATE_LIST_ATTRIBUTES` ops) | playlist4 |
@@ -127,9 +130,31 @@ Bodies are built from `librespot-protocol`'s `playlist4_external` messages
 - The app refuses index-based edits (remove, move) when the loaded entries
   do not line up with the server's positions (episodes or removed items were
   dropped while loading: `TrackList::indices_exact`).
+- **Who may edit:** Spotify's `capabilities.can_edit_items` (rootlist
+  `MetaItem` / playlist `SelectedListContent`) decides, which also covers
+  collaborative lists. Without it, the owner is compared (as a bare,
+  case-insensitive username; `spotify:user:` and percent-encoding are
+  stripped) with the session's canonical username (`session.username()`),
+  so editing never depends on the profile fetch.
 - **Unverified against the live service:** the endpoint paths and op shapes
   follow the playlist4 protocol but were only exercised against wiremock
-  fixtures. Collaborative playlists are not treated specially.
+  fixtures.
+
+### Owner names and incomplete playlists (`app/meta.rs`)
+
+- Owners arrive as usernames (`0d2x…`). Like the desktop client, the app
+  resolves them with the profile view (cached 24 h in the SQLite HTTP
+  cache), at most 20 per batch, only for strings that look like usernames.
+  `spotify` is always shown as "Spotify", the user's own lists show their
+  display name.
+- Rootlist entries can come without name or picture (personalised and
+  Spotify-made lists such as Daily Mix or Discover Weekly). Covers are read
+  from `picture`, then `picture_size` (server-rendered mosaics), then an
+  `image_url` format attribute; names from `name`, then `title`/`name`
+  format attributes. Anything still missing is fetched lazily from the
+  playlist itself (12 per batch, once per run) and, without a picture, drawn
+  as a 2x2 mosaic of the first four distinct album covers. The filled
+  library is written back to the cache.
 
 ### Resilience and request behaviour
 
@@ -220,6 +245,57 @@ or null `data` is never cached.
   the current position, reconnects, and reloads the track on play instead
   of skipping "unavailable" tracks.
 - `--mock` uses `MockEngine`, a simulated clock with the same events.
+
+### Why a track is "unavailable" (`net/audio_diag.rs`)
+
+librespot 0.8 sends `PlayerEvent::Unavailable` for every load failure and
+keeps the reason in its log. Ferrotune installs a `tracing` layer (always
+on, whatever `RUST_LOG` says) that reads librespot's own records:
+
+| librespot record | Stage | App reaction |
+|---|---|---|
+| `librespot_core::audio_key`: `error audio key 0 1` | access point refused the AES key (permanent) | stop at once, one banner, offer a Connect device |
+| `error audio key 0 2` | temporary refusal | retry the same track once |
+| `Track is unavailable: …` | region/catalogue restriction, embargo | skip |
+| `… not available in any supported format` | no Vorbis/MP3 file | skip |
+| `Unable to load audio item / encrypted file` | metadata, storage-resolve or CDN | skip |
+| `Unable to read audio file` (without a key error) | decoder | skip |
+
+At most three unavailable tracks in a row are skipped; the fourth stops
+playback with one persistent banner (no looping toast). Identical toasts
+keep their timer, so repeated events never flicker.
+
+**Audio key denial (real-account finding, v0.4.0).** Login, metadata,
+storage-resolve and the CDN download all work, but the access point answers
+every key request with code 1. This is upstream librespot issue #1649:
+Spotify is phasing out these key requests for some (mostly newer) accounts;
+librespot PR #1763 only retries code 2. The official clients use a different
+DRM key path that Ferrotune does not and will not reimplement. For those
+accounts local playback cannot work, so Ferrotune becomes a controller: the
+banner offers "Play on <device>" (the active or last used device), and with
+`local_denied` (or "Play on this computer" off) every Play goes to that
+device through connect-state.
+
+### Spotify Connect controller (`net/connect_ctl.rs`)
+
+- The engine starts an observer per session once the dealer has a
+  connection id (i.e. Spotify Connect is enabled): one `PUT` as a hidden
+  observer device `hobs_<device id>` (type `OBSERVER`, `can_be_player`
+  false, `hidden` true, reason `PICKER_OPENED`) returns the cluster, and
+  dealer pushes on `hm://connect-state/v1/cluster` keep it current. Opening
+  the picker re-reads it.
+- The picker lists the other visible devices (ours, observers, hidden and
+  offline ones are left out), active first. Choosing one transfers the
+  current remote session, or hands the local queue over as a `play` command
+  (context, track and position). "This computer" transfers back.
+- While another device is active, the player bar, seek bar, volume, shuffle,
+  repeat and MPRIS show and control it (`pause`, `resume`, `skip_next`,
+  `skip_prev`, `seek_to`, `set_shuffling_context`, `set_options`, volume
+  `PUT`), with optimistic updates corrected by the next cluster push. The
+  local player pauses when another device starts playing.
+- **Unverified against the live service:** the observer registration and
+  command shapes follow what the web player sends and librespot's own
+  connect-state code; no real account was available here.
 
 ## 3a. Spotify Connect (`net/session.rs`, `net/playback.rs`)
 

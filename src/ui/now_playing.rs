@@ -40,7 +40,11 @@ pub fn view(app: &App) -> El<'_> {
             ]
             .spacing(4)
             .width(200);
-            if app.remote.is_some() {
+            if app
+                .remote
+                .as_ref()
+                .is_some_and(|r| r.device_name().is_none())
+            {
                 info = info.push(label(
                     "Playing via Spotify Connect",
                     M.font_xs,
@@ -83,7 +87,8 @@ pub fn view(app: &App) -> El<'_> {
     .padding(0)
     .style(theme::play_white)
     .on_press_maybe(has_track.then(|| ui(Ui::TogglePlay)));
-    let repeat_icon = if app.queue.repeat == Repeat::Track {
+    let repeat = app.shown_repeat();
+    let repeat_icon = if repeat == Repeat::Track {
         Icon::RepeatOne
     } else {
         Icon::Repeat
@@ -94,7 +99,7 @@ pub fn view(app: &App) -> El<'_> {
             Icon::Shuffle,
             16.0,
             Some(ui(Ui::ToggleShuffle)),
-            app.queue.shuffle
+            app.shown_shuffle()
         ),
         icon_button(Icon::SkipBack, 16.0, enabled(ui(Ui::Previous)), false),
         play,
@@ -103,7 +108,7 @@ pub fn view(app: &App) -> El<'_> {
             repeat_icon,
             16.0,
             Some(ui(Ui::CycleRepeat)),
-            app.queue.repeat != Repeat::Off
+            repeat != Repeat::Off
         ),
     ]
     .spacing(8)
@@ -151,7 +156,12 @@ pub fn view(app: &App) -> El<'_> {
             app.show_lyrics
         ),
         icon_button(Icon::Queue, 16.0, Some(ui(Ui::ToggleQueue)), app.show_queue),
-        icon_button(Icon::Device, 16.0, None, app.remote.is_some()),
+        icon_button(
+            Icon::Device,
+            16.0,
+            Some(ui(Ui::ToggleDevicePicker)),
+            app.remote.is_some() || app.device_picker
+        ),
         icon_button(vol_icon, 16.0, Some(ui(Ui::ToggleMute)), false),
         slider(0.0..=1.0, vol, |v| ui(Ui::Volume(v)))
             .step(0.01_f32)

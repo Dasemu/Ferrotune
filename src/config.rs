@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const APP_ID: &str = "dev.ferro.ferrotune";
 pub const APP_NAME: &str = "Ferrotune";
@@ -53,7 +53,7 @@ pub fn desktop_client_id() -> String {
     librespot_core::SessionConfig::default().client_id
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeChoice {
     #[default]
@@ -61,7 +61,7 @@ pub enum ThemeChoice {
     Light,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 pub enum Bitrate {
     #[serde(rename = "96")]
     Low,
@@ -81,6 +81,73 @@ pub struct FileConfig {
     pub bitrate: Option<Bitrate>,
     /// Expose Ferrotune as a Spotify Connect device (default true).
     pub connect: Option<bool>,
+    pub normalisation: Option<bool>,
+    pub gapless: Option<bool>,
+    pub autoplay: Option<bool>,
+    /// Spotify Connect device name (empty = "Ferrotune on <host>").
+    pub device_name: Option<String>,
+    /// Play on this computer when Spotify allows it (default true).
+    pub play_local: Option<bool>,
+}
+
+/// Preferences edited on the Settings screen. Nothing secret: they are
+/// stored in `config.json` next to the hand-edited options.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settings {
+    pub bitrate: Bitrate,
+    pub normalisation: bool,
+    pub gapless: bool,
+    pub autoplay: bool,
+    /// Custom Connect device name; empty = the default.
+    pub device_name: String,
+    pub theme: ThemeChoice,
+    pub play_local: bool,
+    pub connect: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            bitrate: Bitrate::Normal,
+            normalisation: false,
+            gapless: true,
+            autoplay: true,
+            device_name: String::new(),
+            theme: ThemeChoice::Dark,
+            play_local: true,
+            connect: true,
+        }
+    }
+}
+
+impl Settings {
+    /// Write the settings into `config.json`, keeping every other key
+    /// (unknown or hand-edited) as it is. Written atomically.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let mut root = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::json!({}));
+        let v = |x: serde_json::Result<serde_json::Value>| x.unwrap_or_default();
+        if let Some(m) = root.as_object_mut() {
+            m.insert("bitrate".into(), v(serde_json::to_value(self.bitrate)));
+            m.insert("normalisation".into(), self.normalisation.into());
+            m.insert("gapless".into(), self.gapless.into());
+            m.insert("autoplay".into(), self.autoplay.into());
+            m.insert("device_name".into(), self.device_name.clone().into());
+            m.insert("theme".into(), v(serde_json::to_value(self.theme)));
+            m.insert("play_local".into(), self.play_local.into());
+            m.insert("connect".into(), self.connect.into());
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        let body = serde_json::to_vec_pretty(&root).map_err(std::io::Error::other)?;
+        std::fs::write(&tmp, body)?;
+        std::fs::rename(&tmp, path)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +161,8 @@ pub struct Config {
     pub device_name: String,
     pub theme: ThemeChoice,
     pub bitrate: Bitrate,
+    /// Settings-screen values as loaded at start.
+    pub settings: Settings,
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub state_dir: PathBuf,
@@ -142,7 +211,27 @@ impl Config {
             Some("dark") => ThemeChoice::Dark,
             _ => file.theme.unwrap_or_default(),
         };
+        let settings = Settings {
+            bitrate: file.bitrate.unwrap_or_default(),
+            normalisation: file.normalisation.unwrap_or(false),
+            gapless: file.gapless.unwrap_or(true),
+            autoplay: file.autoplay.unwrap_or(true),
+            device_name: file
+                .device_name
+                .clone()
+                .map(|n| n.trim().chars().take(64).collect())
+                .unwrap_or_default(),
+            theme,
+            play_local: file.play_local.unwrap_or(true),
+            connect: env.connect.or(file.connect).unwrap_or(true),
+        };
+        let device_name = if settings.device_name.is_empty() {
+            device_name(hostname().as_deref())
+        } else {
+            settings.device_name.clone()
+        };
         Self {
+            settings,
             client_id: env
                 .client_id
                 .map(|c| c.trim().to_owned())
@@ -152,7 +241,7 @@ impl Config {
                 .or(file.redirect_port)
                 .unwrap_or(DEFAULT_REDIRECT_PORT),
             connect: env.connect.or(file.connect).unwrap_or(true),
-            device_name: device_name(hostname().as_deref()),
+            device_name,
             theme,
             bitrate: file.bitrate.unwrap_or_default(),
             data_dir: paths.data_dir,
@@ -181,6 +270,10 @@ impl Config {
 
     pub fn db_path(&self) -> PathBuf {
         self.data_dir.join("cache.sqlite3")
+    }
+
+    pub fn config_path(&self) -> PathBuf {
+        self.config_dir.join("config.json")
     }
 
     pub fn log_path(&self) -> PathBuf {
@@ -388,6 +481,39 @@ mod tests {
         assert!(ok("http://10.0.0.1").is_none());
         assert!(ok("ftp://x").is_none());
         assert!(ok("garbage").is_none());
+    }
+
+    #[test]
+    fn settings_load_and_save_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("ferrotune-settings-{}", std::process::id()));
+        let path = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Hand-edited keys survive a save.
+        std::fs::write(&path, r#"{"redirect_port": 9001, "theme": "light"}"#).unwrap();
+        let s = Settings {
+            bitrate: Bitrate::High,
+            normalisation: true,
+            gapless: false,
+            autoplay: false,
+            device_name: "Desk".into(),
+            theme: ThemeChoice::Dark,
+            play_local: false,
+            connect: true,
+        };
+        s.save(&path).unwrap();
+        let file = read_file_config(&path);
+        assert_eq!(file.redirect_port, Some(9001));
+        let c = Config::resolve(file, Env::default(), paths(), false, false);
+        assert_eq!(c.settings, s);
+        assert_eq!(c.bitrate, Bitrate::High);
+        assert_eq!(c.device_name, "Desk");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"bitrate\": \"320\""), "{raw}");
+        // Garbage files are replaced, not fatal.
+        std::fs::write(&path, "not json").unwrap();
+        s.save(&path).unwrap();
+        assert_eq!(read_file_config(&path).normalisation, Some(true));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
