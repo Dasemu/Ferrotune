@@ -375,18 +375,57 @@ pub fn liked(offset: u32) -> Page<Track> {
 }
 
 pub fn home() -> HomeFeed {
-    let all = all_tracks();
+    let album = |i: usize| {
+        let mut a = album_full(i % ALBUMS.len());
+        a.tracks.clear();
+        Card::Album(a)
+    };
     HomeFeed {
-        recent_tracks: [0, 12, 25, 33, 40, 50, 58, 63]
-            .iter()
-            .map(|&i| all[i % all.len()].clone())
-            .collect(),
-        top_artists: [2, 0, 7, 4, 1, 5].iter().map(|&i| artist(i)).collect(),
-        top_tracks: [24, 2, 61, 37]
-            .iter()
-            .map(|&i| all[i % all.len()].clone())
-            .collect(),
+        shelves: vec![
+            Shelf {
+                title: "Jump back in".into(),
+                items: [0, 3, 5, 1, 6, 2].iter().map(|&i| album(i)).collect(),
+            },
+            Shelf {
+                title: "Your top artists".into(),
+                items: [2, 0, 7, 4, 1, 5]
+                    .iter()
+                    .map(|&i| Card::Artist(artist(i)))
+                    .collect(),
+            },
+            Shelf {
+                title: "Made for you".into(),
+                items: (0..PLAYLISTS.len().min(6))
+                    .map(|i| Card::Playlist(playlist_at(i)))
+                    .collect(),
+            },
+        ],
     }
+}
+
+/// Synced lyrics for any mock track (fictional text).
+pub fn lyrics(_track_id: &str) -> Option<Lyrics> {
+    const LINES: &[&str] = &[
+        "Harbor lights are humming low",
+        "Paper boats on streets of snow",
+        "Every signal fades to gold",
+        "Static songs the night has told",
+        "",
+        "Hold the line, the tide is near",
+        "Turn the dial, the sky is clear",
+    ];
+    Some(Lyrics {
+        synced: true,
+        lines: LINES
+            .iter()
+            .enumerate()
+            .map(|(i, l)| LyricLine {
+                start_ms: (i as u32) * 4_000,
+                text: (*l).to_owned(),
+            })
+            .collect(),
+        provider: Some("Mock Lyrics".into()),
+    })
 }
 
 pub fn playlist(id: &str) -> Result<(Playlist, Page<Track>)> {

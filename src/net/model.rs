@@ -1,5 +1,6 @@
-//! Domain types used by the app and the views. Produced from wire types
-//! (`net::types`), from the SQLite cache, or from `mock.rs`.
+//! Domain types used by the app and the views. Produced from the internal
+//! API's protobuf/JSON (`net::types`), from the SQLite cache, or from
+//! `mock.rs`.
 
 use serde::{Deserialize, Serialize};
 
@@ -198,12 +199,61 @@ impl SearchResults {
     }
 }
 
-/// Everything the Home screen shows.
+/// One card on a Home shelf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Card {
+    Playlist(Playlist),
+    Album(Album),
+    Artist(Artist),
+}
+
+impl Card {
+    pub fn images(&self) -> &[Image] {
+        match self {
+            Self::Playlist(p) => &p.images,
+            Self::Album(a) => &a.images,
+            Self::Artist(a) => &a.images,
+        }
+    }
+}
+
+/// A titled row of cards ("Jump back in", "Made for you", ...).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shelf {
+    pub title: String,
+    pub items: Vec<Card>,
+}
+
+/// Everything the Home screen shows: the shelves Spotify's home feed returns
+/// (or, if that query is unavailable, shelves built from recently played).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HomeFeed {
-    pub recent_tracks: Vec<Track>,
-    pub top_artists: Vec<Artist>,
-    pub top_tracks: Vec<Track>,
+    pub shelves: Vec<Shelf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LyricLine {
+    pub start_ms: u32,
+    pub text: String,
+}
+
+/// Lyrics of one track (time-synced when `synced`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lyrics {
+    pub synced: bool,
+    pub lines: Vec<LyricLine>,
+    /// Attribution shown under the lyrics (the lyrics provider).
+    pub provider: Option<String>,
+}
+
+impl Lyrics {
+    /// Index of the line being sung at `position_ms`.
+    pub fn current_line(&self, position_ms: u32) -> Option<usize> {
+        if !self.synced {
+            return None;
+        }
+        self.lines.iter().rposition(|l| l.start_ms <= position_ms)
+    }
 }
 
 /// A user's library (sidebar contents).
@@ -267,6 +317,26 @@ mod tests {
             width: Some(w),
             height: Some(w),
         }
+    }
+
+    #[test]
+    fn current_lyric_line() {
+        let l = Lyrics {
+            synced: true,
+            lines: [0, 1000, 5000]
+                .iter()
+                .map(|&ms| LyricLine {
+                    start_ms: ms,
+                    text: ms.to_string(),
+                })
+                .collect(),
+            provider: None,
+        };
+        assert_eq!(l.current_line(0), Some(0));
+        assert_eq!(l.current_line(4999), Some(1));
+        assert_eq!(l.current_line(9000), Some(2));
+        let unsynced = Lyrics { synced: false, ..l };
+        assert_eq!(unsynced.current_line(9000), None);
     }
 
     #[test]
