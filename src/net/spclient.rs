@@ -93,7 +93,11 @@ impl CollectionIndex {
         }
         let mut v: Vec<(String, i32)> = by_uri.into_iter().collect();
         v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        v.truncate(COLLECTION_CAP);
+        if v.len() > COLLECTION_CAP {
+            v.truncate(COLLECTION_CAP);
+            // An incomplete index must not be delta-synced.
+            self.sync_token.clear();
+        }
         self.items = v;
     }
 
@@ -355,7 +359,17 @@ impl Internal {
             }
             let n = page.items.len();
             items.extend(page.items);
-            if page.next_page_token.is_empty() || n == 0 || items.len() >= COLLECTION_CAP {
+            if page.next_page_token.is_empty() || n == 0 {
+                break;
+            }
+            if items.len() >= COLLECTION_CAP {
+                // Truncated: a delta from this token would be applied to an
+                // incomplete index, so do a full sync next time instead.
+                tracing::info!(
+                    set,
+                    "collection larger than the cap; not keeping a sync token"
+                );
+                sync_token.clear();
                 break;
             }
             token = page.next_page_token;
@@ -365,17 +379,24 @@ impl Internal {
 
     /// The synced index of a collection set: memory, then a delta from the
     /// last sync token (persisted across restarts), then a full sync.
+    ///
+    /// The lock is only held to read and to store the index, never across
+    /// the (possibly multi-page) network sync; identical concurrent page
+    /// requests are coalesced by the client.
     pub async fn collection(&self, set: &'static str) -> Result<CollectionIndex> {
-        let mut map = self.collections.lock().await;
-        if let Some(idx) = map.get(set)
-            && idx
-                .fetched_at
-                .is_some_and(|t| t.elapsed() < COLLECTION_FRESH)
-        {
-            return Ok(idx.clone());
-        }
-        let known = match map.get(set) {
-            Some(i) => Some(i.clone()),
+        let known = {
+            let map = self.collections.lock().await;
+            if let Some(idx) = map.get(set)
+                && idx
+                    .fetched_at
+                    .is_some_and(|t| t.elapsed() < COLLECTION_FRESH)
+            {
+                return Ok(idx.clone());
+            }
+            map.get(set).cloned()
+        };
+        let known = match known {
+            Some(i) => Some(i),
             None => self.load_persisted(set).await,
         };
         let idx = match known.filter(|k| !k.sync_token.is_empty()) {
@@ -392,10 +413,11 @@ impl Internal {
                     .and_then(|b| proto::decode_delta(&b));
                 match delta {
                     Ok(d) if d.delta_update_possible => {
-                        k.apply(d.items);
                         if !d.sync_token.is_empty() {
                             k.sync_token = d.sync_token;
                         }
+                        // May clear the token again if the cap truncates.
+                        k.apply(d.items);
                         k.fetched_at = Some(std::time::Instant::now());
                         k
                     }
@@ -413,7 +435,7 @@ impl Internal {
             None => self.full_sync(set).await?,
         };
         self.persist(set, &idx).await;
-        map.insert(set, idx.clone());
+        self.collections.lock().await.insert(set, idx.clone());
         Ok(idx)
     }
 
@@ -934,6 +956,16 @@ mod tests {
         assert_eq!(tracks, ["spotify:track:d", "spotify:track:c"]);
         assert!(idx.contains("spotify:album:b"));
         assert!(!idx.contains("spotify:track:a"));
+    }
+
+    #[test]
+    fn truncated_index_drops_its_sync_token() {
+        let items: Vec<CollectionItem> = (0..=COLLECTION_CAP as i32)
+            .map(|i| it(&format!("spotify:track:{i}"), i, false))
+            .collect();
+        let idx = CollectionIndex::from_items(items, "s1".into());
+        assert_eq!(idx.items.len(), COLLECTION_CAP);
+        assert!(idx.sync_token.is_empty());
     }
 
     #[test]
