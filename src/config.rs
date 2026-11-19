@@ -88,6 +88,10 @@ pub struct FileConfig {
     pub device_name: Option<String>,
     /// Play on this computer when Spotify allows it (default true).
     pub play_local: Option<bool>,
+    /// Closing the window keeps Ferrotune running in the tray (default true).
+    pub close_to_tray: Option<bool>,
+    /// Start with no window, only the tray icon (default false).
+    pub start_minimized: Option<bool>,
 }
 
 /// Preferences edited on the Settings screen. Nothing secret: they are
@@ -103,6 +107,10 @@ pub struct Settings {
     pub theme: ThemeChoice,
     pub play_local: bool,
     pub connect: bool,
+    /// Closing the window hides it to the tray while a tray exists.
+    pub close_to_tray: bool,
+    /// Launch with only the tray icon, no window.
+    pub start_minimized: bool,
 }
 
 impl Default for Settings {
@@ -116,6 +124,8 @@ impl Default for Settings {
             theme: ThemeChoice::Dark,
             play_local: true,
             connect: true,
+            close_to_tray: true,
+            start_minimized: false,
         }
     }
 }
@@ -139,6 +149,8 @@ impl Settings {
             m.insert("theme".into(), v(serde_json::to_value(self.theme)));
             m.insert("play_local".into(), self.play_local.into());
             m.insert("connect".into(), self.connect.into());
+            m.insert("close_to_tray".into(), self.close_to_tray.into());
+            m.insert("start_minimized".into(), self.start_minimized.into());
         }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -224,6 +236,8 @@ impl Config {
             theme,
             play_local: file.play_local.unwrap_or(true),
             connect: env.connect.or(file.connect).unwrap_or(true),
+            close_to_tray: file.close_to_tray.unwrap_or(true),
+            start_minimized: file.start_minimized.unwrap_or(false),
         };
         let device_name = if settings.device_name.is_empty() {
             device_name(hostname().as_deref())
@@ -499,6 +513,8 @@ mod tests {
             theme: ThemeChoice::Dark,
             play_local: false,
             connect: true,
+            close_to_tray: false,
+            start_minimized: true,
         };
         s.save(&path).unwrap();
         let file = read_file_config(&path);
