@@ -135,6 +135,26 @@ pub fn check_errors(op: &str, v: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Only complete GraphQL answers are cached: a 200 with `errors` or null
+/// `data` (rejected hash, partial outage) must not be served for the TTL.
+pub fn cacheable(body: &[u8]) -> bool {
+    let Ok(v) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    let no_errors = v
+        .get("errors")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty);
+    no_errors && v.get("data").is_some_and(|d| !d.is_null())
+}
+
+/// Should a pathfinder failure fall back to the spclient endpoint?
+/// Everything except being offline or in a rate-limit cooldown, where a
+/// second request would not help either.
+pub fn should_fall_back(e: &Error) -> bool {
+    !matches!(e, Error::Net(_) | Error::RateLimited(_) | Error::Cancelled)
+}
+
 pub struct Pathfinder {
     client: Arc<InternalClient>,
     queries: Queries,
@@ -154,7 +174,11 @@ impl Pathfinder {
         let path = self.queries.path(op, &variables)?;
         let r = self
             .client
-            .send(Request::get(Target::Pathfinder(path), JSON).ttl(ttl))
+            .send(
+                Request::get(Target::Pathfinder(path), JSON)
+                    .ttl(ttl)
+                    .cache_if(cacheable),
+            )
             .await;
         let bytes = match r {
             Ok(b) => b,
@@ -283,8 +307,8 @@ impl SearchApi for Pathfinder {
                 .await
                 .and_then(|v| parse_search(query, &v));
             match r {
-                Err(Error::QueryRejected(op)) => {
-                    tracing::warn!(op, "persisted query rejected; using spclient search");
+                Err(e) if should_fall_back(&e) => {
+                    tracing::warn!(error = %e, "pathfinder search failed; using spclient search");
                     self.fallback.searchview(query).await
                 }
                 other => other,
@@ -302,8 +326,9 @@ impl HomeApi for Pathfinder {
                 .and_then(|v| parse_home(&v));
             match r {
                 Ok(h) if !h.shelves.is_empty() => Ok(h),
-                Ok(_) | Err(Error::QueryRejected(_)) => {
-                    tracing::warn!("home query unavailable; building Home from recently played");
+                Ok(_) => self.fallback.recent_home().await,
+                Err(e) if should_fall_back(&e) => {
+                    tracing::warn!(error = %e, "home query failed; building Home from recently played");
                     self.fallback.recent_home().await
                 }
                 Err(e) => Err(e),
@@ -368,6 +393,32 @@ mod tests {
         let partial = json!({"errors": [{"message": "x"}], "data": {"a": 1}});
         assert!(check_errors("op", &partial).is_ok());
         assert!(check_errors("op", &json!({"data": {}})).is_ok());
+    }
+
+    #[test]
+    fn only_complete_answers_are_cached() {
+        assert!(cacheable(br#"{"data": {"x": 1}}"#));
+        assert!(cacheable(br#"{"data": {"x": 1}, "errors": []}"#));
+        assert!(!cacheable(
+            br#"{"data": {"x": 1}, "errors": [{"message": "m"}]}"#
+        ));
+        assert!(!cacheable(br#"{"data": null}"#));
+        assert!(!cacheable(b"not json"));
+    }
+
+    #[test]
+    fn fallback_policy() {
+        assert!(should_fall_back(&Error::QueryRejected("x".into())));
+        for status in [401, 403, 500, 503] {
+            assert!(should_fall_back(&Error::Http {
+                status,
+                message: String::new()
+            }));
+        }
+        assert!(should_fall_back(&Error::auth("token")));
+        assert!(should_fall_back(&Error::Protocol("shape".into())));
+        assert!(!should_fall_back(&Error::Net("offline".into())));
+        assert!(!should_fall_back(&Error::RateLimited(5)));
     }
 
     #[test]
