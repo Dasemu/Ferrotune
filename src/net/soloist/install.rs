@@ -341,10 +341,21 @@ async fn run_capture(bin: &Path, arg: &str) -> Result<(bool, String)> {
         .stderr(std::process::Stdio::piped())
         .env_remove("SOLOIST_API_KEY")
         .kill_on_drop(true);
-    let out = tokio::time::timeout(VERSION_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| Error::Protocol("Soloist did not answer --version".into()))?
-        .map_err(|e| Error::Io(format!("could not run Soloist: {e}")))?;
+    // A freshly written executable can briefly be "busy" (ETXTBSY) while a
+    // process forked elsewhere still holds the write handle: retry.
+    let mut attempt = 0;
+    let out = loop {
+        let r = tokio::time::timeout(VERSION_TIMEOUT, cmd.output())
+            .await
+            .map_err(|_| Error::Protocol("Soloist did not answer --version".into()))?;
+        match r {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 10 => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            r => break r.map_err(|e| Error::Io(format!("could not run Soloist: {e}")))?,
+        }
+    };
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push('\n');
     text.push_str(&String::from_utf8_lossy(&out.stderr));

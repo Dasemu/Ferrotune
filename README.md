@@ -201,6 +201,18 @@ an absolute path to the binary) and
 `~/.local/share/icons/hicolor/scalable/apps/dev.ferro.ferrotune.svg`. The
 same files are in `assets/desktop/` if you prefer to copy them by hand.
 
+### Tray and background mode
+
+On KDE Plasma and other panels with a StatusNotifierItem tray, closing the
+window keeps Ferrotune running in the tray (music, Spotify Connect and the
+media keys keep working). Left click shows or hides the window; the menu has
+Play/Pause, Next, Previous, "Start minimized to tray" and Quit; the wheel over
+the icon changes the volume. Without a tray, closing quits. Settings has
+"Close button keeps Ferrotune running in the tray", "Start minimized to tray"
+and "Open Ferrotune at login" (writes `~/.config/autostart/dev.ferro.ferrotune.desktop`
+with `--minimized`). Launching Ferrotune again shows the running window. The
+tray is Linux only for now; Windows and macOS are not implemented.
+
 ### Optional settings
 
 Nothing is required. `~/.config/ferrotune/config.json` may contain:

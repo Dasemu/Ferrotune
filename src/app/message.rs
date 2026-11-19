@@ -31,6 +31,8 @@ pub enum Message {
     Ui(Ui),
     Net(Net),
     Done(Done),
+    /// Events from the system tray service.
+    Tray(crate::tray::Event),
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +107,14 @@ pub enum Ui {
     ToggleUserMenu,
     Setting(super::settings::SettingChange),
     Soloist(super::soloist::SoloistUi),
+    // window and tray
+    /// The window's close button (or Alt+F4).
+    CloseRequested,
+    ToggleWindow,
+    ShowWindow,
+    HideWindow,
+    ToggleStartMinimized,
+    WindowMoved(iced::Point),
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +169,10 @@ pub enum Done {
     CacheSize(Result<u64>),
     CacheCleared(Result<()>),
     SettingsSaved(Result<()>),
+    /// Autostart entry written or removed: the resulting state.
+    AutostartChanged(std::result::Result<bool, String>),
+    /// Initial autostart state read from disk.
+    AutostartLoaded(bool),
     Screenshot(iced::window::Screenshot),
     ScreenshotSaved(Result<()>),
     Quit,

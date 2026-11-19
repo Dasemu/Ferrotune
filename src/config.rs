@@ -103,6 +103,10 @@ pub struct FileConfig {
     pub engine: Option<AudioEngine>,
     /// PipeWire node for Spotify Soloist (empty = default output).
     pub soloist_output: Option<String>,
+    /// Closing the window keeps Ferrotune running in the tray (default true).
+    pub close_to_tray: Option<bool>,
+    /// Start with no window, only the tray icon (default false).
+    pub start_minimized: Option<bool>,
 }
 
 /// Preferences edited on the Settings screen. Nothing secret: they are
@@ -121,6 +125,10 @@ pub struct Settings {
     pub engine: AudioEngine,
     /// PipeWire node name or id for Spotify Soloist; empty = default.
     pub soloist_output: String,
+    /// Closing the window hides it to the tray while a tray exists.
+    pub close_to_tray: bool,
+    /// Launch with only the tray icon, no window.
+    pub start_minimized: bool,
 }
 
 impl Default for Settings {
@@ -136,6 +144,8 @@ impl Default for Settings {
             connect: true,
             engine: AudioEngine::Builtin,
             soloist_output: String::new(),
+            close_to_tray: true,
+            start_minimized: false,
         }
     }
 }
@@ -161,6 +171,8 @@ impl Settings {
             m.insert("connect".into(), self.connect.into());
             m.insert("engine".into(), v(serde_json::to_value(self.engine)));
             m.insert("soloist_output".into(), self.soloist_output.clone().into());
+            m.insert("close_to_tray".into(), self.close_to_tray.into());
+            m.insert("start_minimized".into(), self.start_minimized.into());
         }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -261,6 +273,8 @@ impl Config {
                         .collect()
                 })
                 .unwrap_or_default(),
+            close_to_tray: file.close_to_tray.unwrap_or(true),
+            start_minimized: file.start_minimized.unwrap_or(false),
         };
         let device_name = if settings.device_name.is_empty() {
             device_name(hostname().as_deref())
@@ -548,6 +562,8 @@ mod tests {
             connect: true,
             engine: AudioEngine::Soloist,
             soloist_output: "alsa_output.usb".into(),
+            close_to_tray: false,
+            start_minimized: true,
         };
         s.save(&path).unwrap();
         let file = read_file_config(&path);

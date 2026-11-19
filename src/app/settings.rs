@@ -16,6 +16,10 @@ pub enum SettingChange {
     PlayLocal(bool),
     Connect(bool),
     Theme(ThemeChoice),
+    CloseToTray(bool),
+    StartMinimized(bool),
+    /// Writes or removes the XDG autostart entry (not stored in config.json).
+    Autostart(bool),
     /// Typing in the device name field (saved on commit).
     DeviceName(String),
     DeviceNameCommit,
@@ -60,6 +64,9 @@ pub fn apply(s: &mut Settings, c: &SettingChange) -> Effects {
             s.connect = *on;
         }
         SettingChange::Theme(t) => s.theme = *t,
+        SettingChange::CloseToTray(on) => s.close_to_tray = *on,
+        SettingChange::StartMinimized(on) => s.start_minimized = *on,
+        SettingChange::Autostart(_) => e.save = false,
         SettingChange::DeviceName(n) => {
             s.device_name = n
                 .chars()
@@ -101,7 +108,13 @@ impl App {
                 Message::Done(Done::CacheCleared(r))
             });
         }
+        if let SettingChange::Autostart(on) = c {
+            return self.set_autostart(on);
+        }
         let fx = apply(&mut self.settings, &c);
+        if let SettingChange::CloseToTray(on) = c {
+            self.win.close_to_tray = on;
+        }
         if fx.restart_engine {
             // A new subscription identity restarts the engine; its `Ready`
             // re-attaches the session.
@@ -175,5 +188,17 @@ mod tests {
         assert!(apply(&mut s, &SettingChange::Autoplay(false)).next_session);
         assert!(!s.autoplay);
         assert!(!apply(&mut s, &SettingChange::ClearCache).save);
+    }
+
+    #[test]
+    fn tray_settings_default_and_save() {
+        let mut s = Settings::default();
+        assert!(s.close_to_tray && !s.start_minimized);
+        let e = apply(&mut s, &SettingChange::CloseToTray(false));
+        assert!(e.save && !e.restart_engine && !s.close_to_tray);
+        assert!(apply(&mut s, &SettingChange::StartMinimized(true)).save);
+        assert!(s.start_minimized);
+        // The autostart file is the source of truth, not config.json.
+        assert!(!apply(&mut s, &SettingChange::Autostart(true)).save);
     }
 }

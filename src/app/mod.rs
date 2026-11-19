@@ -2,6 +2,7 @@
 //! No I/O happens here directly: side effects are returned as `Task`s that
 //! call into `net`, `store` and `auth`.
 
+mod background;
 pub mod edit;
 pub mod images;
 pub mod menu;
@@ -12,6 +13,7 @@ pub mod settings;
 pub mod shortcuts;
 pub mod soloist;
 pub mod state;
+pub mod window;
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -68,6 +70,8 @@ pub struct ScreenshotPlan {
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     pub screenshot: Option<ScreenshotPlan>,
+    /// `--minimized`: start with only the tray icon, no window.
+    pub minimized: bool,
     pub started: Option<Instant>,
 }
 
@@ -228,6 +232,19 @@ pub struct App {
     screenshot: Option<ScreenshotPlan>,
     started: Instant,
     pub first_frame_logged: Cell<bool>,
+    /// Main-window lifecycle (visible / hidden to the tray).
+    pub win: window::WindowState,
+    window_id: Option<iced::window::Id>,
+    /// Size and position remembered while the window is closed.
+    geometry: Option<window::Geometry>,
+    /// Last reported window position (`None` on Wayland).
+    window_pos: Option<iced::Point>,
+    /// "Open at login" (the autostart file exists).
+    pub autostart: bool,
+    /// Whether a tray icon is requested (never for screenshots).
+    tray_enabled: bool,
+    /// Handle to the running tray, once it registered.
+    tray_control: Option<crate::tray::Control>,
 }
 
 impl std::fmt::Debug for App {
@@ -457,6 +474,8 @@ fn window_event(
         iced::Event::Window(iced::window::Event::Resized(size)) => {
             Some(ui(Ui::WindowResized(size)))
         }
+        iced::Event::Window(iced::window::Event::Moved(p)) => Some(ui(Ui::WindowMoved(p))),
+        iced::Event::Window(iced::window::Event::CloseRequested) => Some(ui(Ui::CloseRequested)),
         _ => None,
     }
 }
@@ -547,6 +566,12 @@ impl App {
             Some((id.to_owned(), name.to_owned()))
         });
         let screenshot = opts.screenshot.clone();
+        let tray_enabled = screenshot.is_none();
+        let (win, first_window) = window::WindowState::boot(
+            tray_enabled,
+            opts.minimized || config.settings.start_minimized,
+            config.settings.close_to_tray,
+        );
         let mut app = Self {
             auth: AuthState::initial(),
             engine_kind: engine_kind(mock, &config.settings),
@@ -615,9 +640,22 @@ impl App {
             screenshot,
             started: opts.started.unwrap_or_else(Instant::now),
             first_frame_logged: Cell::new(false),
+            win,
+            window_id: None,
+            geometry: None,
+            window_pos: None,
+            autostart: false,
+            tray_enabled,
+            tray_control: None,
         };
 
-        let mut tasks = Vec::new();
+        let mut tasks = vec![app.run_window_action(first_window)];
+        if !mock && tray_enabled {
+            tasks.push(Task::perform(
+                async { tokio::task::spawn_blocking(crate::tray::autostart::current).await },
+                |r| Message::Done(Done::AutostartLoaded(r.unwrap_or(false))),
+            ));
+        }
         if mock {
             tasks.push(app.signed_in(SessionReady {
                 source: DataSource::Mock,
@@ -730,10 +768,21 @@ impl App {
             );
         }
         subs.push(iced::event::listen_with(window_event));
+        if self.tray_enabled {
+            subs.push(Subscription::run(crate::tray::events).map(Message::Tray));
+            subs.push(
+                Subscription::run(crate::tray::instance::show_requests)
+                    .map(|()| Message::Ui(Ui::ShowWindow)),
+            );
+        }
         if self.drag.is_some() {
             subs.push(iced::event::listen_with(mouse_up_event));
         }
-        if self.now_playback().status == PlayStatus::Playing || self.toast.is_some() {
+        // The tick only redraws the progress bar and expires toasts: not needed
+        // while the window is hidden to the tray.
+        if self.win.visible
+            && (self.now_playback().status == PlayStatus::Playing || self.toast.is_some())
+        {
             subs.push(
                 iced::time::every(Duration::from_millis(500)).map(|i| Message::Ui(Ui::Tick(i))),
             );
@@ -750,6 +799,7 @@ impl App {
             Message::Net(Net::Media(e)) => self.on_media(e),
             Message::Net(Net::Soloist(e)) => self.on_soloist(e),
             Message::Done(d) => self.on_done(d),
+            Message::Tray(ev) => self.on_tray(ev),
         };
         let pending = std::mem::take(&mut self.pending);
         let task = if pending.is_empty() {
@@ -761,6 +811,7 @@ impl App {
             return task;
         }
         self.push_media_snapshot();
+        self.sync_tray();
         Task::batch([
             task,
             self.request_images(),
@@ -952,7 +1003,7 @@ impl App {
 
     /// Quit: Soloist is asked to stop first (SIGTERM), so it can remove its
     /// runtime files; the child also dies with us (`PR_SET_PDEATHSIG`).
-    fn quit(&mut self) -> Task<Message> {
+    pub(super) fn quit(&mut self) -> Task<Message> {
         if let Some(h) = self.soloist.handle.take() {
             h.send(crate::net::soloist::Control::Shutdown);
             return Task::perform(
@@ -1329,6 +1380,9 @@ impl App {
     }
 
     fn request_images(&mut self) -> Task<Message> {
+        if !self.win.visible {
+            return Task::none();
+        }
         let Some(src) = self.source() else {
             return Task::none();
         };
@@ -2139,7 +2193,7 @@ impl App {
                     Task::none()
                 }
                 MediaCommand::SetVolume(v) => self.update_ui(Ui::Volume(v as f32)),
-                MediaCommand::Raise => iced::window::latest().and_then(iced::window::gain_focus),
+                MediaCommand::Raise => self.show_window(),
                 MediaCommand::Quit => self.quit(),
                 MediaCommand::SetShuffle(on) if self.remote_device().is_some() => {
                     if on != self.shown_shuffle() {
@@ -2164,65 +2218,64 @@ impl App {
                 }
                 MediaCommand::SetShuffle(_) | MediaCommand::SetLoop(_) => Task::none(),
             },
-            MediaEvent::Command(c) => match c {
-                MediaCommand::Play => {
-                    if self.playback.status == PlayStatus::Paused {
-                        self.resume();
-                    } else if self.playback.status == PlayStatus::Stopped
-                        && let Some(t) = self.queue.current.clone()
-                    {
-                        self.start_track(t, 0);
+            MediaEvent::Command(c) => {
+                match c {
+                    MediaCommand::Play => {
+                        if self.playback.status == PlayStatus::Paused {
+                            self.resume();
+                        } else if self.playback.status == PlayStatus::Stopped
+                            && let Some(t) = self.queue.current.clone()
+                        {
+                            self.start_track(t, 0);
+                        }
+                        Task::none()
                     }
-                    Task::none()
-                }
-                MediaCommand::Pause | MediaCommand::Stop => {
-                    self.engine_send(PlaybackCommand::Pause);
-                    Task::none()
-                }
-                MediaCommand::PlayPause => self.update_ui(Ui::TogglePlay),
-                MediaCommand::Next => self.update_ui(Ui::Next),
-                MediaCommand::Previous => self.update_ui(Ui::Previous),
-                MediaCommand::Seek(offset_us) => {
-                    let pos = i64::from(self.playback.position(self.now))
-                        .saturating_add(offset_us / 1000);
-                    self.seek_to(crate::net::mpris::clamp_ms(pos));
-                    Task::none()
-                }
-                MediaCommand::SetPosition {
-                    track_id,
-                    position_us,
-                } => {
-                    if self
-                        .queue
-                        .current
-                        .as_ref()
-                        .is_some_and(|t| crate::net::mpris::track_path(&t.id).ends_with(&track_id))
-                    {
-                        self.seek_to(crate::net::mpris::clamp_ms(position_us / 1000));
+                    MediaCommand::Pause | MediaCommand::Stop => {
+                        self.engine_send(PlaybackCommand::Pause);
+                        Task::none()
                     }
-                    Task::none()
-                }
-                MediaCommand::SetVolume(v) => {
-                    let t = self.update_ui(Ui::Volume(v as f32));
-                    Task::batch([t, self.update_ui(Ui::VolumeCommit)])
-                }
-                MediaCommand::SetShuffle(on) => {
-                    if on != self.queue.shuffle {
-                        return self.update_ui(Ui::ToggleShuffle);
+                    MediaCommand::PlayPause => self.update_ui(Ui::TogglePlay),
+                    MediaCommand::Next => self.update_ui(Ui::Next),
+                    MediaCommand::Previous => self.update_ui(Ui::Previous),
+                    MediaCommand::Seek(offset_us) => {
+                        let pos = i64::from(self.playback.position(self.now))
+                            .saturating_add(offset_us / 1000);
+                        self.seek_to(crate::net::mpris::clamp_ms(pos));
+                        Task::none()
                     }
-                    Task::none()
+                    MediaCommand::SetPosition {
+                        track_id,
+                        position_us,
+                    } => {
+                        if self.queue.current.as_ref().is_some_and(|t| {
+                            crate::net::mpris::track_path(&t.id).ends_with(&track_id)
+                        }) {
+                            self.seek_to(crate::net::mpris::clamp_ms(position_us / 1000));
+                        }
+                        Task::none()
+                    }
+                    MediaCommand::SetVolume(v) => {
+                        let t = self.update_ui(Ui::Volume(v as f32));
+                        Task::batch([t, self.update_ui(Ui::VolumeCommit)])
+                    }
+                    MediaCommand::SetShuffle(on) => {
+                        if on != self.queue.shuffle {
+                            return self.update_ui(Ui::ToggleShuffle);
+                        }
+                        Task::none()
+                    }
+                    MediaCommand::SetLoop(l) => {
+                        self.queue.repeat = match l {
+                            MediaLoop::None => Repeat::Off,
+                            MediaLoop::Playlist => Repeat::Context,
+                            MediaLoop::Track => Repeat::Track,
+                        };
+                        self.persist_setting("repeat", self.queue.repeat.as_str().into())
+                    }
+                    MediaCommand::Raise => self.show_window(),
+                    MediaCommand::Quit => self.quit(),
                 }
-                MediaCommand::SetLoop(l) => {
-                    self.queue.repeat = match l {
-                        MediaLoop::None => Repeat::Off,
-                        MediaLoop::Playlist => Repeat::Context,
-                        MediaLoop::Track => Repeat::Track,
-                    };
-                    self.persist_setting("repeat", self.queue.repeat.as_str().into())
-                }
-                MediaCommand::Raise => iced::window::latest().and_then(iced::window::gain_focus),
-                MediaCommand::Quit => self.quit(),
-            },
+            }
         }
     }
 
@@ -2300,6 +2353,7 @@ impl App {
                 | Ui::HoverRow(_)
                 | Ui::Scrolled(_)
                 | Ui::WindowResized(_)
+                | Ui::WindowMoved(_)
         ) {
             self.menu = None;
         }
@@ -2634,6 +2688,15 @@ impl App {
                 Task::batch([t, self.update_ui(Ui::VolumeCommit)])
             }
             Ui::Quit => self.quit(),
+            Ui::CloseRequested
+            | Ui::ToggleWindow
+            | Ui::ShowWindow
+            | Ui::HideWindow
+            | Ui::ToggleStartMinimized => self.update_background(u),
+            Ui::WindowMoved(p) => {
+                self.window_pos = Some(p);
+                Task::none()
+            }
             Ui::ToggleHelp => {
                 self.menu = None;
                 self.dialog = match self.dialog {
@@ -2988,12 +3051,23 @@ impl App {
             }
             Done::PlaylistCreated(tmp, r) => self.on_playlist_created(tmp, r),
             Done::PlaylistEdited(snap, what, r) => self.on_playlist_edited(*snap, what, r),
-            Done::Quit => self.quit(),
             Done::SoloistKey(r) => {
                 self.on_soloist_key(r);
                 Task::none()
             }
             Done::SoloistKeySaved(r) => self.on_soloist_key_saved(r),
+            Done::AutostartLoaded(on) => {
+                self.autostart = on;
+                Task::none()
+            }
+            Done::AutostartChanged(r) => {
+                match r {
+                    Ok(on) => self.autostart = on,
+                    Err(e) => self.show_toast(&e),
+                }
+                Task::none()
+            }
+            Done::Quit => self.quit(),
             Done::ConnectSent(Ok(())) => Task::none(),
             Done::OwnerNames(v) => self.on_owner_names(v),
             Done::PlaylistFill(v) => self.on_playlist_fill(v),
@@ -3184,6 +3258,20 @@ impl App {
                 self.nav = Nav::new(Route::Home);
                 tasks.push(self.navigate(Route::Settings));
                 self.cache_bytes = Some(23_400_000);
+                // Show the bottom of the page, where the window / tray
+                // options live.
+                tasks.push(
+                    Task::perform(
+                        async { tokio::time::sleep(Duration::from_millis(1200)).await },
+                        |()| (),
+                    )
+                    .then(|()| {
+                        iced::widget::operation::snap_to(
+                            crate::ui::MAIN_SCROLL,
+                            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+                        )
+                    }),
+                );
             }
             "soloist" => {
                 // First use: Spotify refused librespot's audio key.
@@ -4200,5 +4288,145 @@ mod tests {
             app.session_opts().device_id.as_deref(),
             Some(app.device_id.as_str())
         );
+    }
+
+    fn tray_cmd(app: &mut App, c: crate::tray::Command) {
+        let _ = app.update(Message::Tray(crate::tray::Event::Command(c)));
+    }
+
+    fn tray_registered(app: &mut App) {
+        let (tx, _rx) = tokio::sync::watch::channel(crate::tray::TrayModel::default());
+        let control = crate::tray::Control::new(Arc::new(tx));
+        let _ = app.update(Message::Tray(crate::tray::Event::Ready(control)));
+    }
+
+    #[tokio::test]
+    async fn playback_and_tray_transport_keep_working_while_hidden() {
+        use crate::tray::Command;
+        let (mut app, mut rx, tracks) = real_app_playing();
+        app.session = Some(fake_session());
+        tray_registered(&mut app);
+        let _ = app.update(ui(Ui::PlayFrom(
+            TrackSource::Playlist("pl01".into()),
+            Some(0),
+        )));
+        let uri = tracks[0].uri.clone();
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::Playing {
+            uri: uri.clone(),
+            position_ms: 1_000,
+        })));
+        while rx.try_recv().is_ok() {}
+        assert!(app.win.visible);
+
+        // Close button: hidden to the tray, window closed, state kept.
+        let _ = app.update(ui(Ui::CloseRequested));
+        assert!(!app.win.visible);
+        assert!(app.window_id.is_none());
+        assert!(app.session.is_some(), "the session stays up");
+        assert_eq!(app.playback.status, PlayStatus::Playing);
+        let m = app.tray_model();
+        assert!(m.playing && !m.visible);
+        assert_eq!(
+            m.tooltip_title(),
+            format!("{} \u{2014} {}", tracks[0].artist_line(), tracks[0].name)
+        );
+
+        // Tray "Pause" reaches the engine; the engine's answer updates state.
+        tray_cmd(&mut app, Command::PlayPause);
+        assert!(matches!(rx.try_recv(), Ok(PlaybackCommand::Pause)));
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::Paused {
+            uri,
+            position_ms: 2_000,
+        })));
+        assert_eq!(app.playback.status, PlayStatus::Paused);
+        assert!(!app.tray_model().playing);
+        assert_eq!(app.tray_model().tooltip_title(), "Ferrotune");
+
+        // Next from the tray advances the queue, still hidden.
+        tray_cmd(&mut app, Command::Next);
+        assert_eq!(drain_loads(&mut rx), vec![tracks[1].uri.clone()]);
+        assert!(!app.win.visible);
+
+        // Left click brings the window back.
+        tray_cmd(&mut app, Command::Toggle);
+        assert!(app.win.visible);
+        assert!(app.window_id.is_some());
+    }
+
+    #[test]
+    fn tray_transport_controls_the_connect_device_like_the_player_bar() {
+        // The tray maps to the same `Ui` messages as the player bar, and
+        // `update_ui` routes those to the remote device when one is active
+        // (see `cluster_with_active_remote_device_drives_the_player_bar`).
+        use crate::tray::Command::*;
+        assert!(matches!(window::command_to_ui(PlayPause), Ui::TogglePlay));
+        assert!(matches!(window::command_to_ui(Next), Ui::Next));
+        assert!(matches!(window::command_to_ui(Previous), Ui::Previous));
+    }
+
+    #[test]
+    fn no_tray_host_means_closing_quits_and_hidden_start_recovers() {
+        // No watcher answered yet: the close button exits (as before).
+        let mut app = mock_app();
+        assert_eq!(app.win.close_requested(), window::Action::Exit);
+        // `--minimized` opens no window until a tray host shows up.
+        let (mut app, _) = App::boot(
+            Config::for_tests(),
+            Options {
+                minimized: true,
+                ..Options::default()
+            },
+        );
+        assert!(!app.win.visible && app.window_id.is_none());
+        let _ = app.update(Message::Tray(crate::tray::Event::Unavailable));
+        assert!(
+            app.win.visible && app.window_id.is_some(),
+            "never invisible"
+        );
+    }
+
+    #[test]
+    fn screenshots_never_use_the_tray() {
+        let (app, _) = App::boot(
+            Config::for_tests(),
+            Options {
+                screenshot: Some(ScreenshotPlan {
+                    screen: "settings".into(),
+                    out: "x.png".into(),
+                }),
+                minimized: true,
+                ..Options::default()
+            },
+        );
+        assert!(app.win.visible && !app.tray_enabled);
+    }
+
+    #[test]
+    fn scroll_on_the_tray_icon_steps_the_volume() {
+        let mut app = mock_app();
+        let before = app.now_playback().volume;
+        tray_cmd(&mut app, crate::tray::Command::VolumeStep(-0.05));
+        assert!(app.now_playback().volume < before);
+    }
+
+    #[test]
+    fn start_minimized_toggle_from_the_tray_is_saved_in_settings() {
+        let mut app = mock_app();
+        assert!(!app.settings.start_minimized);
+        tray_cmd(&mut app, crate::tray::Command::ToggleStartMinimized);
+        assert!(app.settings.start_minimized);
+        assert!(app.tray_model().start_minimized);
+        tray_cmd(&mut app, crate::tray::Command::ToggleStartMinimized);
+        assert!(!app.settings.start_minimized);
+    }
+
+    #[test]
+    fn close_to_tray_setting_reaches_the_window_state() {
+        let mut app = mock_app();
+        tray_registered(&mut app);
+        assert!(app.win.close_to_tray);
+        let _ = app.update(ui(Ui::Setting(settings::SettingChange::CloseToTray(false))));
+        assert!(!app.win.close_to_tray);
+        assert_eq!(app.win.close_requested(), window::Action::Exit);
     }
 }

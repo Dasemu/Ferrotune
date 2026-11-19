@@ -16,6 +16,17 @@ Things learned while building Ferrotune. Add new entries at the top.
   `--version` layout is not documented: parse the first version number and
   the first ISO date, and fall back to the archive's `Last-Modified` for the
   90-day expiry.
+- **Use `ksni` with `async-io`, not its default `tokio` feature.** `ksni/tokio`
+  turns on `zbus/tokio` for the whole build, and then keyring's blocking
+  Secret Service connect panics ("Cannot start a runtime from within a
+  runtime") whenever it runs inside a tokio context (every `#[tokio::test]`
+  that boots a real `App`). `ksni = { default-features = false, features =
+  ["async-io"] }` still shares the single zbus 5 already in the tree.
+- **Hiding to the tray = closing the window.** With `iced::daemon` the
+  renderer is freed (RSS drops ~15 MB under tiny-skia); the daemon keeps
+  running because `exit_on_close_request: false` and the app decides on
+  `CloseRequested`. Also drop decoded cover art and stop the 500 ms tick while
+  hidden. Audio, Connect and MPRIS are unaffected because they live in `App`.
 
 - **librespot hides why a track failed.** `PlayerEvent::Unavailable` has no
   reason; the cause is only in librespot's log. A tracing layer that reads

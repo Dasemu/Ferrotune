@@ -58,6 +58,10 @@ ubuntu-22.04, and creates GitHub Release `v<Cargo version>` with `ferrotune-v<ve
   its top: add new passive events (hover, scroll, resize) there.
 - Playlist edits are optimistic: keep the `EditSnapshot` rollback path (tested
   in `app/playlists.rs`) when adding new edit kinds.
+- Tray: `ksni` must use `default-features = false, features = ["async-io"]`
+  (its `tokio` feature switches zbus to tokio and breaks keyring's blocking
+  connect). Hiding closes the window (`iced::daemon`); never hide without a
+  registered StatusNotifierWatcher.
 - librespot's `Unavailable` has no reason: `net/audio_diag.rs` reads it from
   librespot's log. Audio key code 1 = Spotify denies local playback for the
   account (librespot #1649); play through Connect, never bypass it.
