@@ -93,6 +93,8 @@ pub struct ConnectOptions {
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
     pub client_id: String,
+    /// Stable device id (persisted by the app); `None` = random per session.
+    pub device_id: Option<String>,
     pub connect: Option<ConnectOptions>,
 }
 
@@ -133,14 +135,70 @@ impl SpotifySession {
     }
 }
 
+/// Access-point login failure reasons we act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginFailure {
+    /// The credentials are no good any more: delete them.
+    BadCredentials,
+    /// Free account: keep the credentials, explain Premium.
+    PremiumRequired,
+    /// TryAnotherAP / CouldNotValidateCredentials / ProtocolError /
+    /// BadConnectionId: retry later with the same credentials.
+    Transient,
+    /// Any other refusal (travel restriction, banned app...).
+    Other,
+}
+
+/// Classify librespot's `AuthenticationError::LoginFailed(code)`.
+///
+/// librespot maps *every* code to `ErrorKind::PermissionDenied` and its
+/// `AuthenticationError` type is private (`mod connection`), so it cannot be
+/// downcast from outside the crate; its `Display` text ("Login failed with
+/// reason: <reason>", from librespot's `login_error_message`) is stable and
+/// is what we match on.
+pub fn classify_login_failure(message: &str) -> Option<LoginFailure> {
+    let reason = message.split("Login failed with reason: ").nth(1)?;
+    Some(if reason.starts_with("Bad credentials") {
+        LoginFailure::BadCredentials
+    } else if reason.starts_with("Premium account required") {
+        LoginFailure::PremiumRequired
+    } else if [
+        "Try another access point",
+        "Could not validate credentials",
+        "Protocol error",
+        "Bad connection ID",
+    ]
+    .iter()
+    .any(|r| reason.starts_with(r))
+    {
+        LoginFailure::Transient
+    } else {
+        LoginFailure::Other
+    })
+}
+
+pub const PREMIUM_REQUIRED: &str = "Spotify Premium is required. Ferrotune plays audio through librespot, which only works with Premium accounts.";
+
 fn map_connect_error(e: &librespot_core::Error, stored: bool) -> Error {
     use librespot_core::error::ErrorKind;
-    match e.kind {
-        // AP login refused: the credentials are no good any more.
-        ErrorKind::PermissionDenied if stored => Error::revoked(crate::auth::SILENT_LOGIN_REJECTED),
-        ErrorKind::PermissionDenied => {
-            Error::auth("Spotify refused the login. A Premium account is required.")
+    match classify_login_failure(&e.error.to_string()) {
+        Some(LoginFailure::BadCredentials) if stored => {
+            return Error::revoked(crate::auth::SILENT_LOGIN_REJECTED);
         }
+        Some(LoginFailure::BadCredentials) => {
+            return Error::auth("Spotify refused the login (bad credentials). Please try again.");
+        }
+        // Not revoked: the stored credentials are kept.
+        Some(LoginFailure::PremiumRequired) => return Error::auth(PREMIUM_REQUIRED),
+        Some(LoginFailure::Transient) => {
+            return Error::Net("Spotify could not complete the login right now".into());
+        }
+        Some(LoginFailure::Other) => {
+            return Error::auth(format!("Spotify refused the login: {}", e.error));
+        }
+        None => {}
+    }
+    match e.kind {
         ErrorKind::Unavailable | ErrorKind::DeadlineExceeded => {
             Error::Net("could not reach Spotify's access points".into())
         }
@@ -193,17 +251,21 @@ pub async fn connect(
 ) -> Result<(SpotifySession, StoredCredentials)> {
     let stored = creds.is_stored();
     let credentials = creds.into_librespot()?;
-    let config = librespot_core::SessionConfig {
+    let mut config = librespot_core::SessionConfig {
         client_id: opts.client_id.clone(),
         ..librespot_core::SessionConfig::default()
     };
+    if let Some(id) = &opts.device_id {
+        config.device_id = id.clone();
+    }
     let mut device = None;
     let mut session = librespot_core::Session::new(config.clone(), None);
     if let Some(c) = &opts.connect {
         // Spirc opens the session itself after registering its listeners.
         match start_connect(session.clone(), credentials.clone(), c).await {
             Ok(d) => device = Some(Arc::new(d)),
-            Err(e) if e.kind == librespot_core::error::ErrorKind::PermissionDenied => {
+            // A refused login would be refused again without Connect.
+            Err(e) if classify_login_failure(&e.error.to_string()).is_some() => {
                 return Err(map_connect_error(&e, stored));
             }
             Err(e) => {
@@ -355,10 +417,28 @@ mod tests {
 
     #[test]
     fn login_errors_classify() {
-        let denied = librespot_core::Error::permission_denied("no");
-        assert!(map_connect_error(&denied, true).is_revoked());
-        assert!(!map_connect_error(&denied, false).is_revoked());
+        let failed = |reason: &str| {
+            librespot_core::Error::permission_denied(std::io::Error::other(format!(
+                "Login failed with reason: {reason}"
+            )))
+        };
+        // Only bad credentials revoke the stored login.
+        assert!(map_connect_error(&failed("Bad credentials"), true).is_revoked());
+        assert!(!map_connect_error(&failed("Bad credentials"), false).is_revoked());
+        for transient in [
+            "Try another access point",
+            "Could not validate credentials",
+            "Protocol error",
+        ] {
+            let e = map_connect_error(&failed(transient), true);
+            assert!(matches!(e, Error::Net(_)), "{transient}: {e:?}");
+        }
+        let premium = map_connect_error(&failed("Premium account required"), true);
+        assert!(!premium.is_revoked());
+        assert_eq!(premium.user_message(), PREMIUM_REQUIRED);
+        assert!(!map_connect_error(&failed("Travel restriction"), true).is_revoked());
         let down = librespot_core::Error::unavailable("x");
         assert!(matches!(map_connect_error(&down, true), Error::Net(_)));
+        assert_eq!(classify_login_failure("timeout"), None);
     }
 }
