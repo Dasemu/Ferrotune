@@ -157,13 +157,31 @@ impl PlaybackHandle {
 #[derive(Debug, Clone)]
 pub enum PlaybackEvent {
     Ready(PlaybackHandle),
-    Loading { uri: String },
-    Playing { uri: String, position_ms: u32 },
-    Paused { uri: String, position_ms: u32 },
-    Position { uri: String, position_ms: u32 },
+    Loading {
+        uri: String,
+    },
+    Playing {
+        uri: String,
+        position_ms: u32,
+    },
+    Paused {
+        uri: String,
+        position_ms: u32,
+    },
+    Position {
+        uri: String,
+        position_ms: u32,
+    },
     Stopped,
-    EndOfTrack { uri: String },
-    Unavailable { uri: String },
+    EndOfTrack {
+        uri: String,
+    },
+    Unavailable {
+        uri: String,
+    },
+    /// The audio session or player died (network drop, suspend/resume,
+    /// revoked token). The app must reconnect and re-attach.
+    SessionLost,
     Error(String),
 }
 
@@ -384,10 +402,29 @@ async fn run_librespot(
     let mut pending_volume: f32 = 0.7;
     let mut player: Option<Arc<Player>> = None;
     let mut player_events: Option<librespot_playback::player::PlayerEventChannel> = None;
+    let mut session: Option<librespot_core::Session> = None;
+    let mut health = tokio::time::interval(Duration::from_secs(2));
+    health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Report a dead session once and forget it until a new one is attached.
+    let lost = |session: &mut Option<librespot_core::Session>| {
+        if session.take().is_some() {
+            tracing::warn!("audio session lost");
+            let _ = ev_tx.send(PlaybackEvent::SessionLost);
+        }
+    };
 
     loop {
         let cmd = tokio::select! {
             cmd = cmd_rx.recv() => match cmd { Some(c) => c, None => return },
+            _ = health.tick() => {
+                let dead = session.as_ref().is_some_and(librespot_core::Session::is_invalid)
+                    || player.as_ref().is_some_and(|p| p.is_invalid());
+                if dead {
+                    lost(&mut session);
+                }
+                continue;
+            }
             ev = async {
                 match player_events.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -396,26 +433,40 @@ async fn run_librespot(
             } => {
                 match ev {
                     Some(ev) => {
-                        if let Some(mapped) = map_player_event(ev)
+                        let mapped = map_player_event(ev);
+                        // "Unavailable" from a dead session is a connection
+                        // problem, not a missing track.
+                        if matches!(mapped, Some(PlaybackEvent::Unavailable { .. }))
+                            && session.as_ref().is_some_and(librespot_core::Session::is_invalid)
+                        {
+                            lost(&mut session);
+                            continue;
+                        }
+                        if let Some(mapped) = mapped
                             && ev_tx.send(mapped).is_err()
                         {
                             return;
                         }
                     }
                     None => {
+                        // The player thread is gone; drop it so the next
+                        // Attach builds a fresh one.
                         player_events = None;
-                        let _ = ev_tx.send(PlaybackEvent::Error("audio player stopped".into()));
+                        player = None;
+                        lost(&mut session);
                     }
                 }
                 continue;
             }
         };
         match cmd {
-            PlaybackCommand::Attach(session) => {
-                if let Some(p) = &player {
-                    p.set_session(session.0);
+            PlaybackCommand::Attach(new_session) => {
+                session = Some(new_session.0.clone());
+                if let Some(p) = player.as_ref().filter(|p| !p.is_invalid()) {
+                    p.set_session(new_session.0);
                     continue;
                 }
+                let session = new_session;
                 let config = PlayerConfig {
                     bitrate: match bitrate {
                         BitrateKey::Low => LBitrate::Bitrate96,

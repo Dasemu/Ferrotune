@@ -105,6 +105,8 @@ pub struct App {
     login_abort: Option<iced::task::Handle>,
     loading_more: bool,
     audio_attempt: u32,
+    /// The engine lost the loaded track (session died): reload on play.
+    reload_on_play: bool,
     screenshot: Option<ScreenshotPlan>,
     started: Instant,
     pub first_frame_logged: Cell<bool>,
@@ -376,6 +378,7 @@ impl App {
             login_abort: None,
             loading_more: false,
             audio_attempt: 0,
+            reload_on_play: false,
             screenshot,
             started: opts.started.unwrap_or_else(Instant::now),
             first_frame_logged: Cell::new(false),
@@ -1039,6 +1042,7 @@ impl App {
     }
 
     fn start_track(&mut self, track: Track, position_ms: u32) {
+        self.reload_on_play = false;
         self.playback.duration_ms = track.duration_ms;
         self.playback
             .report(PlayStatus::Loading, position_ms, self.now);
@@ -1052,6 +1056,57 @@ impl App {
             self.show_toast("Connecting to Spotify audio…");
         }
         self.engine_send(cmd);
+    }
+
+    /// Resume after pause; reloads the track if the engine lost it.
+    fn resume(&mut self) {
+        if self.reload_on_play
+            && let Some(t) = self.queue.current.clone()
+        {
+            let pos = self.playback.position(self.now);
+            self.start_track(t, pos);
+        } else {
+            self.engine_send(PlaybackCommand::Play);
+        }
+    }
+
+    fn pause_for_reconnect(&mut self) {
+        let pos = self.playback.position(self.now);
+        self.playback.report(PlayStatus::Paused, pos, self.now);
+        self.reload_on_play = true;
+    }
+
+    /// The engine reported a dead audio session: keep the queue, pause, and
+    /// reconnect with backoff.
+    fn on_session_lost(&mut self) -> Task<Message> {
+        if self.is_mock() {
+            return Task::none();
+        }
+        let had_session = self.session.take().is_some();
+        if self.queue.current.is_some() {
+            self.pause_for_reconnect();
+        }
+        if !had_session || self.source.is_none() {
+            // A reconnect is already pending (or we are logged out).
+            return Task::none();
+        }
+        self.show_toast("Connection to Spotify lost. Reconnecting…");
+        self.schedule_audio_reconnect(&Error::Net("audio session lost".into()))
+    }
+
+    fn schedule_audio_reconnect(&mut self, e: &Error) -> Task<Message> {
+        tracing::warn!(error = %e, attempt = self.audio_attempt, "audio session failed");
+        self.connection = Connection::Reconnecting {
+            attempt: self.audio_attempt,
+        };
+        let delay = backoff_delay(self.audio_attempt, rand::random());
+        self.audio_attempt = self.audio_attempt.saturating_add(1);
+        if self.audio_attempt == 3 {
+            self.show_toast(e.user_message());
+        }
+        Task::perform(async move { tokio::time::sleep(delay).await }, |()| {
+            Message::Done(Done::ReconnectAudio)
+        })
     }
 
     fn stop_playback(&mut self) {
@@ -1141,9 +1196,16 @@ impl App {
                 self.advance(true);
             }
             PlaybackEvent::Unavailable { uri } if self.current_uri() == Some(&uri) => {
-                self.show_toast("This song is not available. Skipping.");
-                self.advance(false);
+                if !self.is_mock() && self.session.is_none() {
+                    // No audio session: every track would be "unavailable".
+                    // Pause instead of skipping through the whole queue.
+                    self.pause_for_reconnect();
+                } else {
+                    self.show_toast("This song is not available. Skipping.");
+                    self.advance(false);
+                }
             }
+            PlaybackEvent::SessionLost => return self.on_session_lost(),
             PlaybackEvent::Stopped => {
                 if self.playback.status != PlayStatus::Loading {
                     self.playback.status = PlayStatus::Stopped;
@@ -1173,7 +1235,7 @@ impl App {
             MediaEvent::Command(c) => match c {
                 MediaCommand::Play => {
                     if self.playback.status == PlayStatus::Paused {
-                        self.engine_send(PlaybackCommand::Play);
+                        self.resume();
                     } else if self.playback.status == PlayStatus::Stopped
                         && let Some(t) = self.queue.current.clone()
                     {
@@ -1337,7 +1399,7 @@ impl App {
                     PlayStatus::Playing | PlayStatus::Loading => {
                         self.engine_send(PlaybackCommand::Pause)
                     }
-                    PlayStatus::Paused => self.engine_send(PlaybackCommand::Play),
+                    PlayStatus::Paused => self.resume(),
                     PlayStatus::Stopped => {
                         if let Some(t) = self.queue.current.clone() {
                             self.start_track(t, 0);
@@ -1541,18 +1603,7 @@ impl App {
                 if e.is_revoked() || self.source.is_none() {
                     return self.fail(&e);
                 }
-                tracing::warn!(error = %e, attempt = self.audio_attempt, "audio session failed");
-                self.connection = Connection::Reconnecting {
-                    attempt: self.audio_attempt,
-                };
-                let delay = backoff_delay(self.audio_attempt, rand::random());
-                self.audio_attempt += 1;
-                if self.audio_attempt == 3 {
-                    self.show_toast(e.user_message());
-                }
-                Task::perform(async move { tokio::time::sleep(delay).await }, |()| {
-                    Message::Done(Done::ReconnectAudio)
-                })
+                self.schedule_audio_reconnect(&e)
             }
             Done::ReconnectAudio => {
                 if self.source.is_some() && self.session.is_none() {
@@ -1843,6 +1894,96 @@ mod tests {
 
     fn feed(app: &mut App, d: Done) {
         let _ = app.update(Message::Done(d));
+    }
+
+    /// A real (non-mock) app with a fake Web source and a fake engine.
+    fn real_app_playing() -> (
+        App,
+        tokio::sync::mpsc::UnboundedReceiver<PlaybackCommand>,
+        Vec<Track>,
+    ) {
+        let mut cfg = Config::for_tests();
+        cfg.mock = false;
+        let (mut app, _) = App::boot(cfg, Options::default());
+        app.secrets = Arc::new(MemoryStore::new());
+        app.store = Store::in_memory().unwrap();
+        app.source = Some(DataSource::Mock);
+        app.auth = AuthState::SignedIn {
+            user: crate::mock::user(),
+        };
+        let (h, rx) = PlaybackHandle::channel();
+        app.engine = Some(h);
+        let (pl, page) = crate::mock::playlist("pl01").unwrap();
+        app.playlists
+            .insert("pl01".into(), (pl, TrackList::from_page(page.clone())));
+        (app, rx, page.items)
+    }
+
+    #[tokio::test]
+    async fn lost_session_pauses_and_reloads_instead_of_skipping() {
+        let (mut app, mut rx, tracks) = real_app_playing();
+        // Pretend a session was attached (librespot sessions can't be built
+        // without a network, so use the "had a session" path via the flag).
+        let _ = app.update(ui(Ui::PlayFrom(
+            TrackSource::Playlist("pl01".into()),
+            Some(0),
+        )));
+        let uri = tracks[0].uri.clone();
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::Playing {
+            uri: uri.clone(),
+            position_ms: 30_000,
+        })));
+        while rx.try_recv().is_ok() {}
+
+        // An unconnected librespot session stands in for the dead one.
+        app.session = Some(SpotifySession(librespot_core::Session::new(
+            librespot_core::SessionConfig::default(),
+            None,
+        )));
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::SessionLost)));
+        assert!(app.session.is_none());
+        assert_eq!(app.connection, Connection::Reconnecting { attempt: 0 });
+        assert_eq!(app.playback.status, PlayStatus::Paused);
+
+        // Unavailable while the session is gone must not skip the queue.
+        let _ = app.update(Message::Net(Net::Playback(PlaybackEvent::Unavailable {
+            uri: uri.clone(),
+        })));
+        assert_eq!(app.queue.current.as_ref().unwrap().uri, uri);
+        assert_eq!(app.playback.status, PlayStatus::Paused);
+
+        // Pressing play reloads the track at the saved position.
+        let _ = app.update(ui(Ui::TogglePlay));
+        let mut reloaded = None;
+        while let Ok(cmd) = rx.try_recv() {
+            if let PlaybackCommand::Load {
+                uri, position_ms, ..
+            } = cmd
+            {
+                reloaded = Some((uri, position_ms));
+            }
+        }
+        let (u, pos) = reloaded.expect("track reloaded");
+        assert_eq!(u, uri);
+        assert!(pos >= 30_000);
+    }
+
+    #[test]
+    fn session_lost_schedules_reconnect_with_backoff() {
+        let (mut app, _rx, _) = real_app_playing();
+        app.reload_on_play = false;
+        // Simulate an established session being reported dead twice.
+        app.audio_attempt = 0;
+        let _ = app.schedule_audio_reconnect(&Error::Net("x".into()));
+        assert_eq!(app.connection, Connection::Reconnecting { attempt: 0 });
+        let _ = app.schedule_audio_reconnect(&Error::Net("x".into()));
+        assert_eq!(app.connection, Connection::Reconnecting { attempt: 1 });
+        let _ = app.update(Message::Done(Done::ReconnectAudio));
+        assert_eq!(
+            app.connection,
+            Connection::Connecting,
+            "retries while no session"
+        );
     }
 
     #[test]
