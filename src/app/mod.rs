@@ -725,7 +725,7 @@ impl App {
             Message::Net(Net::Media(e)) => self.on_media(e),
             Message::Done(d) => self.on_done(d),
         };
-        let pending: Vec<_> = self.pending.drain(..).collect();
+        let pending = std::mem::take(&mut self.pending);
         let task = if pending.is_empty() {
             task
         } else {
