@@ -2,6 +2,18 @@
 
 Things learned while building Ferrotune. Add new entries at the top.
 
+- **Sync releases back with a real merge.** A separate `chore(release)` commit
+  on development edits the same version lines as the bump on main, so every
+  later development→main PR conflicts. Merging main into development
+  (`-X theirs`, then version = max) makes the release commit an ancestor.
+- **A server-controlled duration is untrusted input.** `Instant + Duration`
+  panics on overflow: clamp `Retry-After` and use `checked_add`.
+- **`futures::Shared` alone is not a request coalescer.** If every waiter is
+  dropped, the shared future stops being polled while holding its permit.
+  Run the request in `tokio::spawn` and share the join handle.
+- **librespot reports every AP login refusal as `PermissionDenied`.** Only
+  "Bad credentials" may delete stored credentials.
+
 - **One identity beats two.** v0.2 needed a developer-dashboard app for the
   Web API on top of librespot's session. Users rejected that. Everything now
   goes through the librespot session (desktop client id, login5 tokens,
