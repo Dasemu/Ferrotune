@@ -27,7 +27,8 @@ use librespot_protocol::extended_metadata::{
 };
 use librespot_protocol::metadata;
 use librespot_protocol::playlist4_external::{
-    Item, ItemAttributes, ListAttributes, ListItems, MetaItem, SelectedListContent,
+    CreateListReply, Item, ItemAttributes, ListAttributes, ListChanges, ListItems,
+    ListUpdateRequest, MetaItem, SelectedListContent,
 };
 use protobuf::well_known_types::any::Any;
 use protobuf::{Message, MessageField};
@@ -917,5 +918,176 @@ async fn graphql_errors_are_not_cached_and_403_falls_back() {
     assert_eq!(
         e.backend.search.search("harbor").await.unwrap().tracks[0].name,
         "Harbor Lights"
+    );
+}
+
+// ------------------------------------------------------- playlist editing
+
+fn revision_reply(rev: &[u8]) -> Vec<u8> {
+    let mut c = SelectedListContent::new();
+    c.set_revision(rev.to_vec());
+    c.write_to_bytes().unwrap()
+}
+
+fn changes_posted(reqs: &[Request], suffix: &str) -> Vec<ListChanges> {
+    reqs.iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path().ends_with(suffix))
+        .map(|r| Message::parse_from_bytes(&r.body).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn editing_posts_changes_on_the_fresh_revision_and_drops_cached_reads() {
+    use ferrotune::net::playlist_edit::Edit;
+    let e = env().await;
+    mount_metadata(&e.server).await;
+    let pid = id(50);
+    let p = format!("/playlist/v2/playlist/{pid}");
+    // The content read happens twice: before the edit and, because the edit
+    // invalidated the cache, once more after it.
+    Mock::given(method("GET"))
+        .and(path(p.clone()))
+        .and(query_param("length", "100"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(playlist_content(
+            &[uri("track", 1), uri("track", 2)],
+            "Mix",
+            2,
+        )))
+        .expect(2)
+        .mount(&e.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(p.clone()))
+        .and(query_param("length", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(revision_reply(b"rev1")))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{p}/changes")))
+        .and(header("content-type", "application/x-protobuf"))
+        .and(header("authorization", "Bearer session-token-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(revision_reply(b"rev2")))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+
+    e.backend.catalog.playlist(&pid).await.unwrap();
+    e.backend
+        .playlists
+        .edit_playlist(&pid, Edit::Remove(vec![(1, uri("track", 2))]))
+        .await
+        .unwrap();
+    e.backend.catalog.playlist(&pid).await.unwrap();
+
+    let reqs = e.server.received_requests().await.unwrap();
+    let sent = changes_posted(&reqs, "/changes");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].base_revision(), b"rev1");
+    let op = &sent[0].deltas[0].ops[0];
+    assert_eq!(op.rem.from_index(), 1);
+    assert_eq!(op.rem.items[0].uri(), uri("track", 2));
+}
+
+#[tokio::test]
+async fn create_playlist_posts_attributes_then_adds_it_to_the_rootlist() {
+    let e = env().await;
+    let new_id = id(60);
+    let mut reply = CreateListReply::new();
+    reply.set_uri(format!("spotify:playlist:{new_id}"));
+    Mock::given(method("POST"))
+        .and(path("/playlist/v2/playlist"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(reply.write_to_bytes().unwrap()))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/playlist/v2/user/ferro_user/rootlist"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(revision_reply(b"root7")))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/playlist/v2/user/ferro_user/rootlist/changes"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(revision_reply(b"root8")))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+
+    let pl = e
+        .backend
+        .playlists
+        .create_playlist("Road trip")
+        .await
+        .unwrap();
+    assert_eq!(pl.id, new_id);
+    assert_eq!(pl.name, "Road trip");
+    assert_eq!(pl.owner, "ferro_user");
+
+    let reqs = e.server.received_requests().await.unwrap();
+    let create = reqs
+        .iter()
+        .find(|r| r.method.as_str() == "POST" && r.url.path() == "/playlist/v2/playlist")
+        .unwrap();
+    let body: ListUpdateRequest = Message::parse_from_bytes(&create.body).unwrap();
+    assert_eq!(body.attributes.name(), "Road trip");
+    let added = changes_posted(&reqs, "/rootlist/changes");
+    assert_eq!(added[0].base_revision(), b"root7");
+    let add = &added[0].deltas[0].ops[0].add;
+    assert!(add.add_first());
+    assert_eq!(add.items[0].uri(), format!("spotify:playlist:{new_id}"));
+}
+
+#[tokio::test]
+async fn delete_playlist_removes_it_from_the_rootlist() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path("/playlist/v2/user/ferro_user/rootlist"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(revision_reply(b"root1")))
+        .mount(&e.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/playlist/v2/user/ferro_user/rootlist/changes"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&e.server)
+        .await;
+    e.backend.playlists.delete_playlist(&id(61)).await.unwrap();
+    let reqs = e.server.received_requests().await.unwrap();
+    let sent = changes_posted(&reqs, "/rootlist/changes");
+    let rem = &sent[0].deltas[0].ops[0].rem;
+    assert!(rem.items_as_key());
+    assert_eq!(rem.items[0].uri(), format!("spotify:playlist:{}", id(61)));
+    // A malformed id never reaches the network.
+    assert!(e.backend.playlists.delete_playlist("../x").await.is_err());
+}
+
+#[tokio::test]
+async fn refused_edit_is_an_error_and_rename_sends_attributes() {
+    use ferrotune::net::playlist_edit::Edit;
+    let e = env().await;
+    let p = format!("/playlist/v2/playlist/{}", id(62));
+    Mock::given(method("GET"))
+        .and(path(p.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(revision_reply(b"r")))
+        .mount(&e.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{p}/changes")))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&e.server)
+        .await;
+    let r = e
+        .backend
+        .playlists
+        .edit_playlist(&id(62), Edit::Rename("New name".into()))
+        .await;
+    assert!(matches!(r, Err(Error::Http { status: 403, .. })));
+    let reqs = e.server.received_requests().await.unwrap();
+    let sent = changes_posted(&reqs, "/changes");
+    let o = &sent[0].deltas[0].ops[0];
+    assert_eq!(
+        o.update_list_attributes.new_attributes.values.name(),
+        "New name"
     );
 }
